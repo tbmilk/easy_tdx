@@ -15,3 +15,11 @@ class TdxDecodeError(TdxError):
 
 class TdxCommandError(TdxError):
     """命令执行失败（服务器返回错误）"""
+
+
+class TdxFileNotFoundError(TdxError):
+    """本地数据文件不存在"""
+
+
+class TdxOfflineError(TdxError):
+    """离线数据读取失败（路径未配置、文件格式错误等）"""
