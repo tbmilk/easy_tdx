@@ -1,11 +1,7 @@
 # easy-tdx
 
-# easy-tdx
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/easy-tdx.svg)](https://pypi.org/project/easy-tdx/)
-[![PyPI - Downloads](https://img.shields.io/pypi/dm/easy-tdx)](https://pypi.org/project/easy-tdx/)
-[![Python Version](https://img.shields.io/pypi/pyversions/easy-tdx)](https://pypi.org/project/easy-tdx/)
 [![GitHub Repo stars](https://img.shields.io/github/stars/handsomejustin/easy-tdx?style=social)](https://github.com/handsomejustin/easy-tdx)
 [![GitHub last commit](https://img.shields.io/github/last-commit/handsomejustin/easy-tdx)](https://github.com/handsomejustin/easy-tdx)
 [![Read the Docs](https://img.shields.io/readthedocs/easy-tdx)](https://easy-tdx.readthedocs.io/)
