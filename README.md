@@ -16,7 +16,7 @@ easy-tdx 要做的事很简单：**把机构的数据锁砸开，扔到每个普
 
 **32个技术指标**（MACD、KDJ、RSI、BOLL……连”捉妖大师”和”30日乖离率信号”都给你算好）开箱即用。
 **缠论分析**（笔、中枢、买卖点、背驰）一键出结果——你不再需要手画分型、猜线段。
-**内置回测引擎**——写个策略文件，一行命令跑回测，9 个经典策略自带，批量对比哪个最赚钱一目了然。
+**内置回测引擎**——写个策略文件，一行命令跑回测，15 个经典策略自带，批量对比哪个最赚钱一目了然。
 
 装上就能跑。**Python API + CLI 双通道**，输出 JSON 天然喂给 AI Agent：Claude Code、OpenClaw、Hermes 直接吃。
 
@@ -376,7 +376,7 @@ python -X utf8 run_all_strategies.py SH 600519 --count 2000 --cash 1000000 --adj
 
 #### 自带策略示例
 
-`strategies/` 目录下有 9 个开箱即用的策略文件，可直接用于 `--strategy-file`：
+`strategies/` 目录下有 15 个开箱即用的策略文件，可直接用于 `--strategy-file`：
 
 | 文件 | 策略 | 类型 | 适合行情 |
 |------|------|------|----------|
@@ -389,6 +389,12 @@ python -X utf8 run_all_strategies.py SH 600519 --count 2000 --cash 1000000 --adj
 | `turtle_breakout.py` | 海龟交易法（唐安奇通道） | 趋势突破 | 牛市启动 |
 | `bias_reversal.py` | 乖离率反转 | 反转 | 震荡回归 |
 | `volume_price.py` | 量价配合 | 综合判断 | 放量突破 |
+| `zhuoyao_momentum.py` | 捉妖大师多周期共振 | 趋势跟踪 | 多周期共振强势股 |
+| `dmi_trend.py` | DMI/ADX 趋势强度跟踪 | 趋势跟踪 | 单边趋势（过滤震荡） |
+| `cci_breakout.py` | CCI ±100 区间突破 | 区间突破 | 震荡转趋势 |
+| `mfi_volume.py` | MFI 量价反转 | 量价反转 | 震荡市（带量能确认） |
+| `trix_cross.py` | TRIX 三重平滑趋势交叉 | 趋势跟踪 | 中长线（抗噪音） |
+| `mtm_momentum.py` | MTM 动量零线穿越 | 动量 | 趋势拐点 |
 
 编写自定义策略只需继承 `Strategy` 基类：
 
@@ -1109,6 +1115,19 @@ ruff format --check src/ tests/                              # format check
 详见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。
 
 ## Changelog
+
+### 1.8.2 (2026-06-09)
+
+**策略扩充 + 可视化** — 新增 6 个策略（共 15 个）、`--show` 资金曲线图、茅台 demo 截图。
+
+- 新增 `run_all_strategies.py --show` 参数：自动弹出最佳策略资金曲线 vs 股价归一化对比图（matplotlib 双轴图 + 买卖点标记）
+- 新增 `zhuoyao_momentum` 策略：ZHUOYAO 多周期共振（SHORT/TREND/MID 三重过滤）
+- 新增 `dmi_trend` 策略：DMI/ADX 趋势强度跟踪
+- 新增 `cci_breakout` 策略：CCI ±100 区间突破
+- 新增 `mfi_volume` 策略：MFI 量价反转（带成交量权重的 RSI）
+- 新增 `trix_cross` 策略：TRIX 三重平滑趋势交叉
+- 新增 `mtm_momentum` 策略：MTM 动量零线穿越
+- 新增 SH600519 贵州茅台 demo 截图
 
 ### 1.8.1 (2026-06-09)
 
