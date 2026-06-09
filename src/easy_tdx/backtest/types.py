@@ -121,7 +121,19 @@ class BacktestResult:
 
     def to_json(self) -> str:
         """将结果序列化为 JSON 字符串。"""
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+        d = self.to_dict()
+        return json.dumps(d, ensure_ascii=False, indent=2, default=self._json_default)
+
+    @staticmethod
+    def _json_default(obj: Any) -> Any:
+        """JSON serializer for objects not serializable by default json code."""
+        if hasattr(obj, "item"):
+            # numpy types
+            return obj.item()
+        if hasattr(obj, "isoformat"):
+            # datetime/timestamp objects
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
     def summary(self) -> None:
         """打印回测概要（标准输出）。"""
