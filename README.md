@@ -1246,6 +1246,13 @@ ruff format --check src/ tests/                              # format check
 
 ## Changelog
 
+### 1.9.4 (2026-06-10)
+
+**Bug 修复** — 修复 `easy-tdx version` 命令硬编码版本号的问题，改为从 `pyproject.toml` 动态读取。
+
+- 修复 `cmd_admin.py` 中 `version` 命令硬编码 `1.1.0` 的问题
+- 版本号现在通过 `importlib.metadata` 从 `pyproject.toml` 动态获取，不再需要手动同步
+
 ### 1.9.3 (2026-06-10)
 
 **新增 `run-all` CLI 命令** — 一行命令批量运行 strategies/ 目录下所有策略并排名，与 `run_all_strategies.py` 脚本功能完全一致。
