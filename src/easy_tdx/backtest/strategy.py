@@ -368,8 +368,12 @@ class Strategy(ABC):
         return {"size": self._position_size}
 
     @property
-    def chanlun(self) -> dict[str, Any] | None:
-        """缠论分析结果（预留）。"""
+    def chanlun(self) -> Any:
+        """缠论分析结果。
+
+        通过 BacktestEngine(chanlun_level=...) 自动注入 ChanlunResult，
+        或通过 engine.run(chanlun_result=...) 手动注入任意对象。
+        """
         return self._chanlun_result
 
     # ── 内部方法（引擎调用） ─────────────────────────────────────────────────────

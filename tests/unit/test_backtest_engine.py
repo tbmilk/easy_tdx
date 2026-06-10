@@ -496,3 +496,59 @@ def test_stop_loss_takes_priority_over_strategy_sell():
     # Should have exactly 1 SELL (from SL, not the manual one at bar 15)
     assert len(sell_trades) == 1, f"Expected 1 SL sell, got {len(sell_trades)}"
     assert sell_trades.iloc[0]["price"] == 95.0
+
+
+# ── Chanlun Auto-Bridge ──────────────────────────────────────────────────────
+
+
+class ChanlunAwareStrategy(Strategy):
+    """Strategy that buys when chanlun analysis has at least one bi."""
+
+    def init(self) -> None:
+        pass
+
+    def next(self) -> None:
+        if self.chanlun is not None and self._bar_index == 15 and self.position["size"] == 0:
+            # Strategy uses chanlun result to make trading decisions
+            bis = self.chanlun.bis if hasattr(self.chanlun, "bis") else []
+            if len(bis) > 0:
+                self.buy(size=0)
+
+
+def test_chanlun_auto_bridge():
+    """Test chanlun_level auto-computes and injects analysis into strategy."""
+    df = _make_df(n=100)
+    engine = BacktestEngine(ChanlunAwareStrategy, cash=100000, chanlun_level="DAILY")
+    result = engine.run(df)
+
+    # Strategy should have received chanlun result (100 bars → at least some bis)
+    trades = result.trades[~result.trades["rejected"]]
+    buy_trades = trades[trades["direction"] == "BUY"]
+
+    # With 100 bars of random data, ChanlunAnalyser should produce bis,
+    # so the strategy should trigger a BUY at bar 15
+    assert len(buy_trades) >= 1, "Expected chanlun-aware BUY"
+
+
+def test_chanlun_manual_result_overrides_auto():
+    """Test explicit chanlun_result takes priority over chanlun_level."""
+    df = _make_df(n=50)
+
+    class CheckerStrategy(Strategy):
+        received: object = None
+
+        def init(self) -> None:
+            pass
+
+        def next(self) -> None:
+            if self._bar_index == 10:
+                CheckerStrategy.received = self.chanlun
+                self.buy(size=10)
+
+    # Pass explicit result — should NOT auto-compute
+    manual_result = {"manual": True}
+    engine = BacktestEngine(CheckerStrategy, cash=100000, chanlun_level="DAILY")
+    result = engine.run(df, chanlun_result=manual_result)
+
+    # Strategy should have received the manual result, not auto-computed one
+    assert CheckerStrategy.received == manual_result

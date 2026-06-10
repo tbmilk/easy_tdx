@@ -56,6 +56,7 @@ class BacktestEngine:
         position_mode: str = "full",
         reject_policy: str = "reduce",
         benchmark: pd.DataFrame | None = None,
+        chanlun_level: str | None = None,
     ):
         """Initialize engine.
 
@@ -70,6 +71,8 @@ class BacktestEngine:
             position_mode: Position mode ('full', 'long_only', 'short_only')
             reject_policy: Reject policy ('reduce', 'reject')
             benchmark: Benchmark data for performance comparison
+            chanlun_level: Auto-compute chanlun analysis at this level
+                (e.g. 'DAILY', '30MIN'). Strategy accesses via self.chanlun.
         """
         self._strategy_cls = strategy if isinstance(strategy, type) else type(strategy)
         self._strategy_instance = strategy if isinstance(strategy, Strategy) else None
@@ -83,19 +86,28 @@ class BacktestEngine:
         self._position_mode = position_mode
         self._reject_policy = reject_policy
         self._benchmark = benchmark
+        self._chanlun_level = chanlun_level
 
     def run(self, df: pd.DataFrame, chanlun_result: Any | None = None) -> BacktestResult:
         """Run backtest.
 
         Args:
             df: Price data with OHLCV columns
-            chanlun_result: Optional chanlun analysis result for strategy
+            chanlun_result: Optional chanlun analysis result for strategy.
+                When provided, takes priority over auto-computed result.
 
         Returns:
             BacktestResult with performance, equity_curve, trades, positions, config
         """
         if len(df) == 0:
             return self._empty_result()
+
+        # Auto-compute chanlun if chanlun_level is set and no manual result
+        if chanlun_result is None and self._chanlun_level is not None:
+            from easy_tdx.chanlun.analyser import ChanlunAnalyser
+
+            analyser = ChanlunAnalyser(frequency=self._chanlun_level)
+            chanlun_result = analyser.process_klines(df)
 
         # Step 1: Signal generation
         signals = self._generate_signals(df, chanlun_result)
