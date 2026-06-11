@@ -1,8 +1,16 @@
-"""Web API schemas and error handling tests (offline, no network)."""
+"""Web API tests (offline, no network).
+
+Covers: schemas, error handling, app factory, DI, all routers,
+        CLI serve command, OpenAPI schema generation.
+"""
 
 from __future__ import annotations
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Task 2: Schemas & Error Handling
+# ---------------------------------------------------------------------------
 
 
 def test_market_enum_values():
@@ -55,3 +63,187 @@ def test_api_error_response():
     d = err.model_dump()
     assert d["error"] == "test error"
     assert d["detail"] == "some detail"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: App Factory & Dependency Injection
+# ---------------------------------------------------------------------------
+
+
+def test_create_app_returns_fastapi_instance():
+    """create_app should return a FastAPI app with routers mounted."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web import create_app
+
+    app = create_app()
+    assert app.title == "easy-tdx API"
+
+    # Check routers are mounted
+    routes = [r.path for r in app.routes]
+    assert any("/api/v1/security" in r for r in routes)
+    assert any("/api/v1/bars" in r for r in routes)
+    assert any("/api/v1/chanlun" in r for r in routes)
+    assert any("/ws/realtime" in r for r in routes)
+
+
+def test_deps_get_client_type():
+    """get_client should be callable (actual client creation needs network)."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.deps import get_client
+
+    assert callable(get_client)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Market Router
+# ---------------------------------------------------------------------------
+
+
+def test_market_router_endpoints():
+    """Market router should define all expected endpoints."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.routers.market import router
+
+    paths = [r.path for r in router.routes]
+    assert "/security/count" in paths
+    assert "/security/list" in paths
+    assert "/security/list-all" in paths
+    assert "/quotes" in paths
+    assert "/market/stat" in paths
+    assert "/fund-flow" in paths
+    assert "/fund-flow/history" in paths
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Bars Router
+# ---------------------------------------------------------------------------
+
+
+def test_bars_router_endpoints():
+    """Bars router should define all expected endpoints."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.routers.bars import router
+
+    paths = [r.path for r in router.routes]
+    assert "/bars" in paths
+    assert "/bars/index" in paths
+    assert "/minute" in paths
+    assert "/minute/history" in paths
+    assert "/transaction" in paths
+    assert "/transaction/history" in paths
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Finance Router
+# ---------------------------------------------------------------------------
+
+
+def test_finance_router_endpoints():
+    """Finance router should define all expected endpoints."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.routers.finance import router
+
+    paths = [r.path for r in router.routes]
+    assert "/xdxr" in paths
+    assert "/finance" in paths
+    assert "/company/category" in paths
+    assert "/company/content" in paths
+    assert "/financial/file-list" in paths
+    assert "/financial/records" in paths
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Block Router
+# ---------------------------------------------------------------------------
+
+
+def test_block_router_endpoints():
+    """Block router should define expected endpoints."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.routers.block import router
+
+    paths = [r.path for r in router.routes]
+    assert "/block" in paths
+
+
+# ---------------------------------------------------------------------------
+# Task 8: Chanlun Router
+# ---------------------------------------------------------------------------
+
+
+def test_chanlun_router_endpoints():
+    """Chanlun router should define the analyze endpoint."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.routers.chanlun import router
+
+    paths = [r.path for r in router.routes]
+    assert "/chanlun/analyze" in paths
+
+
+# ---------------------------------------------------------------------------
+# Task 9: Realtime Router
+# ---------------------------------------------------------------------------
+
+
+def test_realtime_router_endpoints():
+    """Realtime router should define the WebSocket endpoint."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web.routers.realtime import router
+
+    paths = [r.path for r in router.routes]
+    assert any("realtime" in p for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Task 10: CLI serve command
+# ---------------------------------------------------------------------------
+
+
+def test_serve_command_exists():
+    """CLI should have a serve command registered."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.cli import cli
+
+    assert "serve" in cli.commands
+
+
+# ---------------------------------------------------------------------------
+# Task 11: Integration — route registration & OpenAPI
+# ---------------------------------------------------------------------------
+
+
+def test_full_app_routes_registered():
+    """All routers should be mounted and accessible."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web import create_app
+
+    app = create_app()
+    all_paths = [r.path for r in app.routes]
+    expected_prefixes = [
+        "/api/v1/security",
+        "/api/v1/bars",
+        "/api/v1/xdxr",
+        "/api/v1/block",
+        "/api/v1/chanlun",
+        "/ws/realtime",
+    ]
+    for prefix in expected_prefixes:
+        matched = any(prefix in p for p in all_paths)
+        assert matched, f"Expected route with prefix '{prefix}' not found in {all_paths}"
+
+
+def test_openapi_schema_generated():
+    """OpenAPI schema should be auto-generated and contain key paths."""
+    pytest.importorskip("fastapi")
+    from easy_tdx.web import create_app
+
+    app = create_app()
+    schema = app.openapi()
+    assert schema["info"]["title"] == "easy-tdx API"
+    assert "/api/v1/security/count" in schema["paths"]
+    assert "/api/v1/bars" in schema["paths"]
+    assert "/api/v1/chanlun/analyze" in schema["paths"]
+    # WebSocket routes are NOT included in OpenAPI schema by default;
+    # they are verified in test_full_app_routes_registered instead.
+    # Just ensure REST paths are present.
+    assert "/api/v1/fund-flow" in schema["paths"]
