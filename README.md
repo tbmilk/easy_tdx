@@ -735,6 +735,86 @@ easy-tdx offline sync-all
 
 > 建议在通达信关闭时执行 sync 命令，避免文件被锁定。空文件自动全量下载，已有数据只做增量追加。
 
+## Web API
+
+将 easy-tdx 暴露为 REST + WebSocket 服务，供前端、其他语言或远程调用。
+
+### 安装
+
+```bash
+pip install easy-tdx[web]
+```
+
+### 快速启动
+
+```bash
+# 启动 Web API 服务器（自动连接最优 TDX 服务器）
+easy-tdx serve
+
+# 指定端口和 TDX 服务器
+easy-tdx serve --port 8080 --tdx-host 119.147.212.81
+
+# 开发模式（自动重载）
+easy-tdx serve --reload
+```
+
+### REST API 示例
+
+```bash
+# 获取深圳市场证券数量
+curl "http://localhost:8000/api/v1/security/count?market=SZ"
+
+# 获取股票K线
+curl "http://localhost:8000/api/v1/bars?market=SZ&code=000001&category=DAY&count=100"
+
+# 批量获取实时行情
+curl -X POST "http://localhost:8000/api/v1/quotes" \
+  -H "Content-Type: application/json" \
+  -d '{"stocks": [{"market": "SZ", "code": "000001"}, {"market": "SH", "code": "600000"}]}'
+
+# 缠论分析
+curl -X POST "http://localhost:8000/api/v1/chanlun/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{"market": "SZ", "code": "000001", "category": "DAY", "count": 200}'
+
+# 市场统计
+curl "http://localhost:8000/api/v1/market/stat"
+
+# 板块信息
+curl "http://localhost:8000/api/v1/block?filename=block_gn.dat"
+```
+
+### WebSocket 实时行情
+
+```javascript
+// JavaScript 示例
+const ws = new WebSocket("ws://localhost:8000/ws/realtime/SZ000001");
+
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    console.log(data);  // {type: "tick", market: "SZ", code: "000001", price: 10.5, ...}
+};
+
+// 动态订阅更多标的
+ws.send(JSON.stringify({action: "subscribe", symbol: "SH600000"}));
+```
+
+### API 文档
+
+启动服务后访问：
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
+### 编程 API
+
+```python
+from easy_tdx.web import create_app
+import uvicorn
+
+app = create_app(host="119.147.212.81", port=7709)
+uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
 ## CLI 命令汇总
 
 | 命令 | 说明 |
@@ -765,6 +845,7 @@ easy-tdx offline sync-all
 | `run-all` | 批量运行所有策略并排名（绩效排名 + 综合评分 + 可选图表） |
 | `screen scan` | 策略选股扫描（纯离线，全市场信号扫描） |
 | `screen rank` | 扫描结果回测排名（按夏普/回撤等指标排序） |
+| `serve` | 启动 Web API 服务器（REST + WebSocket，需 `easy-tdx[web]`） |
 | `f10` | F10 公司信息 |
 | `fund-flow` | 历史资金流向 |
 | `ex kline` | 扩展市场 K 线 |
@@ -1293,6 +1374,7 @@ src/easy_tdx/
 ├── backtest/          # 回测引擎（Strategy基类/向量化引擎/多因子组合/组合回测/绩效分析）
 ├── screen/            # 策略选股扫描（scan信号扫描/rank回测排名/并发扫描/增量缓存）
 ├── realtime/          # 实时数据推送框架（EventBus/事件驱动/asyncio）
+├── web/               # Web API（FastAPI REST + WebSocket）
 ├── models/            # 纯 dataclass，无业务逻辑
 ├── offline/           # 离线数据读写模块（读取 + 写入同步）
 └── cli/               # easy-tdx CLI（click）
@@ -1320,6 +1402,18 @@ ruff format --check src/ tests/                              # format check
 详见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。
 
 ## Changelog
+
+### 1.10.0 (2026-06-12)
+
+**Web API 层** — 新增 FastAPI REST + WebSocket 服务，一键将 easy-tdx 暴露为 HTTP API。
+
+- 新增 `src/easy_tdx/web/` 模块：app factory、6 个路由（market/bars/finance/block/chanlun/realtime）、Pydantic schemas、异常处理
+- 新增 `easy-tdx serve` CLI 命令，支持 `--host`、`--port`、`--tdx-host`、`--reload` 参数
+- REST 端点覆盖全部 `AsyncTdxClient` 方法（K线/报价/资金流向/板块/财务/缠论分析等）
+- WebSocket 端点 `/ws/realtime/{symbol}` 支持实时行情订阅和多标的动态切换
+- 自动生成 Swagger UI (`/docs`) 和 ReDoc (`/redoc`) 文档
+- 可选依赖 `pip install easy-tdx[web]`，核心安装不受影响
+- 16 个离线单元测试覆盖 schemas、路由注册、OpenAPI schema 生成
 
 ### 1.9.10 (2026-06-11)
 
