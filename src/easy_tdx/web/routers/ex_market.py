@@ -15,12 +15,13 @@ router = APIRouter(tags=["ex-market"])
 
 
 def _records_to_df_resp(records: list[Any]) -> DataFrameResponse:
-    """将 dataclass 列表转为 DataFrameResponse。"""
+    """将 dataclass 列表转为 DataFrameResponse（过滤内部 _raw 字段）。"""
     import pandas as pd
 
     if not records:
         return DataFrameResponse(data=[], count=0)
-    df = pd.DataFrame([asdict(r) for r in records])
+    rows = [{k: v for k, v in asdict(r).items() if not k.startswith("_")} for r in records]
+    df = pd.DataFrame(rows)
     return DataFrameResponse.from_dataframe(df)
 
 

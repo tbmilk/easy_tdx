@@ -17,7 +17,11 @@ def get_client(request: Request) -> AsyncTdxClient:
 
 def get_mac_client(request: Request) -> Any:
     """从 app.state 获取共享的 AsyncMacClient 实例。"""
-    client: Any = request.app.state.mac_client
+    from easy_tdx.exceptions import TdxConnectionError
+
+    client: Any | None = request.app.state.mac_client
+    if client is None:
+        raise TdxConnectionError("MAC 客户端未连接")
     return client
 
 
