@@ -144,19 +144,22 @@ class OrderSimulator:
         dt_col = self.df["datetime"]
 
         # 尝试直接比较（如果是 int 类型）
+        # 注意：用 to_numpy().argmax() 取位置索引，而非 idxmax()（返回 label），
+        # 因为后续 self.df.iloc[...] 按位置取行；若 df.index 非默认 RangeIndex，
+        # label != position 会导致撮合取错 bar。
         try:
-            idx = (dt_col == datetime_val).idxmax() if (dt_col == datetime_val).any() else None
-            if idx is not None:
-                return int(idx)
+            mask = (dt_col == datetime_val).to_numpy()
+            if mask.any():
+                return int(mask.argmax())
         except (TypeError, ValueError):
             pass
 
         # 如果是 datetime 对象，转为 int 比较
         if pd.api.types.is_datetime64_any_dtype(dt_col):
             dt_ints = dt_col.dt.strftime("%Y%m%d").astype(int)
-            mask = dt_ints == datetime_val
-            if mask.any():
-                return int(mask.idxmax())
+            mask_arr = (dt_ints == datetime_val).to_numpy()
+            if mask_arr.any():
+                return int(mask_arr.argmax())
             return None
 
         return None

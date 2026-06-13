@@ -464,3 +464,41 @@ class TestSlippageModelIntegration:
         trades = sim.simulate(signals, cash=20000, position=0)
         assert len(trades) == 1
         assert trades[0].slippage == pytest.approx(5.0)
+
+
+# ── Test Non-Continuous Index ─────────────────────────────────────────────────
+
+
+class TestNonContinuousIndex:
+    """df.index 非默认 RangeIndex 时，撮合应按位置（iloc）而非 label 取 bar。
+
+    回归 _find_bar_index 旧实现在非连续 index 下用 idxmax() 返回 label 当位置用，
+    导致 iloc 取错 bar / 越界。
+    """
+
+    def test_next_open_with_non_continuous_index(self) -> None:
+        """信号在 bar 0（label=10），应在 bar 1（position）open 成交。"""
+        df = _make_df(10)
+        df.index = [10 * (i + 1) for i in range(len(df))]  # [10,20,...,100]
+        sim = OrderSimulator(df, execution="next_open")
+
+        signals = [_buy_signal(0, size=100)]
+        trades = sim.simulate(signals, cash=20000, position=0)
+
+        assert len(trades) == 1
+        # position 1 的 open = 101.0；旧代码会用 label 10 当位置 → iloc[10] 越界
+        assert trades[0].price == 101.0
+        assert trades[0].rejected is False
+
+    def test_this_close_with_non_continuous_index(self) -> None:
+        """this_close 模式下信号在 bar 2（label=30），应在同根 close 成交。"""
+        df = _make_df(10)
+        df.index = [10 * (i + 1) for i in range(len(df))]
+        sim = OrderSimulator(df, execution="this_close")
+
+        signals = [_buy_signal(2, size=100)]
+        trades = sim.simulate(signals, cash=20000, position=0)
+
+        assert len(trades) == 1
+        # position 2 的 close = 103.0
+        assert trades[0].price == 103.0
