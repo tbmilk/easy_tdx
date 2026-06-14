@@ -136,11 +136,15 @@ easy-tdx symbol-info SZ 000001 --table
 
 ```bash
 easy-tdx announcement 688017                          # 默认 30 条，JSON 输出
-easy-tdx announcement 600519 --count 50 --page 2      # 翻页
-easy-tdx announcement 000001 --table                  # 表格输出
+easy-tdx announcement 601088 --count 10 --page 2      # 翻页
+easy-tdx announcement 000001 --table                  # 表格输出（不截断 url）
+
+# 下载最新 5 条公告的 PDF 到 ./pdfs 目录
+easy-tdx announcement 601088 --count 5 --download 5 --download-dir ./pdfs
 ```
 
 > 独立数据源（巨潮资讯网），无需连接 TDX 行情服务器即可使用。
+> 返回的 ``url`` 含 4 参数可直接打开，``pdf_url`` 为 PDF 直链。
 
 ### 技术指标
 
@@ -868,7 +872,8 @@ curl "http://localhost:8000/api/v1/mac/server-info"
 # ── 公告检索（巨潮资讯网，独立数据源）──
 # 检索公司公告（无需 TDX 行情服务器）
 curl "http://localhost:8000/api/v1/announcements?code=688017&count=30&page=1"
-# 返回：{"data": [{"title": "...", "type": "...", "date": "...", "url": "..."}], "count": 30}
+# 返回每条含 url（4 参数可直点打开）和 pdf_url（PDF 直链）：
+# {"data": [{"title":"...","type":"...","date":"...","url":".../detail?stockCode=...","pdf_url":"http://static.cninfo.com.cn/.../xxx.PDF",...}], "count": 30}
 
 # ── 排行 / 竞价 / 异动 ──
 # 全 A 涨幅排行前 20
@@ -1338,19 +1343,39 @@ client = CninfoClient()
 
 # 检索公告（默认 30 条，最新在前）
 df = client.get_announcements("688017")
-# → DataFrame[title, type, date, url]
+# → DataFrame[title, type, date, url, code, org_id, announcement_id, announcement_time, pdf_url]
 
 # 翻页 + 自定义数量
-df = client.get_announcements("600519", count=50, page=2)
+df = client.get_announcements("601088", count=10, page=2)
 
-# 返回示例：
-#                                              title      type        date                                                 url
-# 0        关于召开2025年年度股东大会的通知    股东大会  2025-06-14  https://www.cninfo.com.cn/new/disclosure/detail?annoId=abc123
-# 1                          2024年年度报告        定期报告  2025-03-28  https://www.cninfo.com.cn/new/disclosure/detail?annoId=def456
+# 返回示例（url 含 4 参数可直点打开，pdf_url 为 PDF 直链）：
+#   title                       type     date        url                                              pdf_url
+# 0 关于召开2025年年度股东大会... 股东大会 2025-06-14 .../detail?stockCode=688017&announcementId=... http://static.cninfo.com.cn/.../xxx.PDF
+# 1 2024年年度报告              PDF      2025-03-28 .../detail?stockCode=688017&announcementId=... http://static.cninfo.com.cn/.../yyy.PDF
 ```
 
-> orgId 解析沿用 #19 修复：动态拉取官方映射表，查不到回退硬编码规则，
-> 保证 601xxx 等非标 orgId 段也能正常查询。
+> - ``type`` 优先取 cninfo 的 ``announcementTypeName``；该字段对很多公告为 null
+>   （数据源限制），此时回退到 ``adjunctType``（如 "PDF"），再为空给空字符串。
+> - ``url`` 必须含 4 参数（``stockCode``/``announcementId``/``orgId``/``announcementTime``）
+>   才能打开，少参数会 404。
+> - orgId 解析沿用 #19 修复：动态拉取官方映射表，查不到回退硬编码规则，
+>   保证 601xxx 等非标 orgId 段也能正常查询。
+
+#### 下载公告 PDF
+
+```python
+# 下载最新一条公告的 PDF 到当前目录
+df = client.get_announcements("601088", count=5)
+path = client.download_pdf(df.iloc[0])  # 接受 Announcement 或 DataFrame 的一行
+print(path)  # /abs/path/20260605_1225351400.PDF
+
+# 批量下载
+for _, row in df.iterrows():
+    try:
+        path = client.download_pdf(row, dest_dir="./pdfs")
+    except Exception as e:
+        print(f"跳过（无附件或失败）: {e}")
+```
 
 ## 枚举参考
 
@@ -1560,11 +1585,18 @@ ruff format --check src/ tests/                              # format check
 
 **新增巨潮公告检索** — 三层接入（编程 API / CLI / Web API），独立数据源，无需连接 TDX 行情服务器。
 
-- 新模块 `easy_tdx.cninfo`：`CninfoClient().get_announcements(code, count=, page=)` 返回 `DataFrame[title, type, date, url]`
-- CLI：`easy-tdx announcement 688017 [--count N --page N --table]`
+- 新模块 `easy_tdx.cninfo`：`CninfoClient().get_announcements(code, count=, page=)` 返回 `DataFrame[title, type, date, url, code, org_id, announcement_id, announcement_time, pdf_url]`
+- CLI：`easy-tdx announcement 688017 [--count N --page N --table] [--download N --download-dir DIR]`
 - Web：`GET /api/v1/announcements?code=&count=&page=`
+- `CninfoClient().download_pdf(announcement, dest_dir=)` 下载公告 PDF（接受 `Announcement` 或 DataFrame 一行）
 - 标准库 urllib 实现，零新依赖
 - 沿用 #19 修复的 orgId 动态映射 + 三段硬编码 fallback（保证 601xxx 段可查）
+
+**Bug 修复**（实测 601088 暴露）：
+
+- `type` 列全 null：cninfo 对很多公告不填 `announcementTypeName`，回退到 `adjunctType`（如 "PDF"）
+- `url` 404：原仅拼 `announcementId` 一个参数，补全 4 参数 `stockCode`/`announcementId`/`orgId`/`announcementTime`
+- 表格输出 url 被截断成 `https://www.cninfo.com.cn/new/`：`announcement --table` 改用不截断渲染
 
 ### 1.12.0 (2026-06-14)
 

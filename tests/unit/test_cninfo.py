@@ -1,12 +1,13 @@
 """巨潮（cninfo）模块离线测试 —— mock HTTP，零网络依赖。
 
-覆盖：日期转换、orgId 解析（动态表/三段 fallback）、公告解析、分页、
-错误转换、模块导出。
+覆盖：日期转换、orgId 解析（动态表/三段 fallback）、公告解析（含 URL 4 参数、
+type 回退、pdf_url）、PDF 下载、分页、错误转换、模块导出。
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -27,14 +28,28 @@ def test_public_exports() -> None:
 
 
 def test_announcement_is_frozen_dataclass() -> None:
-    """Announcement 应为 frozen dataclass，含 title/type/date/url。"""
+    """Announcement 应为 frozen dataclass，含全部字段。"""
     from easy_tdx.cninfo import Announcement
 
-    a = Announcement(title="t", type="ty", date="2026-06-14", url="http://x")
+    a = Announcement(
+        title="t",
+        type="ty",
+        date="2026-06-14",
+        url="http://x",
+        code="688017",
+        org_id="9900041602",
+        announcement_id="abc123",
+        announcement_time=1718323200000,
+        pdf_url="http://static.cninfo.com.cn/x.PDF",
+    )
     assert a.title == "t"
     assert a.type == "ty"
     assert a.date == "2026-06-14"
-    assert a.url == "http://x"
+    assert a.code == "688017"
+    assert a.org_id == "9900041602"
+    assert a.announcement_id == "abc123"
+    assert a.announcement_time == 1718323200000
+    assert a.pdf_url == "http://static.cninfo.com.cn/x.PDF"
     # frozen
     with pytest.raises(Exception):
         a.title = "mutated"  # type: ignore[misc]
@@ -49,6 +64,29 @@ def test_cninfo_error_is_exception() -> None:
     assert issubclass(CninfoError, TdxError)
 
 
+def test_build_detail_url_has_four_params() -> None:
+    """回归 Bug2：详情页 URL 必须含 4 参数 stockCode/announcementId/orgId/announcementTime。"""
+    from easy_tdx.cninfo.models import build_detail_url
+
+    url = build_detail_url("601088", "1225351323", "9900003701", 1780588800000)
+    assert "stockCode=601088" in url
+    assert "announcementId=1225351323" in url
+    assert "orgId=9900003701" in url
+    assert "announcementTime=1780588800000" in url
+
+
+def test_build_pdf_url() -> None:
+    """adjunctUrl 应拼成 static.cninfo.com.cn 直链。"""
+    from easy_tdx.cninfo.models import build_pdf_url
+
+    assert (
+        build_pdf_url("finalpage/2026-06-05/1225351400.PDF")
+        == "http://static.cninfo.com.cn/finalpage/2026-06-05/1225351400.PDF"
+    )
+    assert build_pdf_url("") == ""
+    assert build_pdf_url(None) == ""  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # 日期转换
 # ---------------------------------------------------------------------------
@@ -58,7 +96,6 @@ def test_ts_to_date_from_millis() -> None:
     """Unix 毫秒整数应转为 YYYY-MM-DD。"""
     from easy_tdx.cninfo.client import _ts_to_date
 
-    # 1718323200000 ms = 2024-06-14 00:00:00 UTC ≈ 当地日期
     assert _ts_to_date(1718323200000)  # 非空字符串，长度 10
     assert len(_ts_to_date(1718323200000)) == 10
 
@@ -207,22 +244,34 @@ _QUERY_RESPONSE: dict[str, Any] = {
             "announcementTypeName": "股东大会",
             "announcementTime": 1749859200000,
             "announcementId": "abc123",
+            "adjunctUrl": "finalpage/2026-06-14/abc123.PDF",
+            "adjunctType": "PDF",
         },
         {
             "announcementTitle": "2024年年度报告",
-            "announcementTypeName": "定期报告",
+            "announcementTypeName": None,  # Bug1 场景：typeName 为 null
             "announcementTime": 1740614400000,
             "announcementId": "def456",
+            "adjunctUrl": "finalpage/2026-02-27/def456.PDF",
+            "adjunctType": "PDF",
+        },
+        {
+            "announcementTitle": "无附件公告",
+            "announcementTypeName": None,
+            "announcementTime": 1740614400000,
+            "announcementId": "ghi789",
+            "adjunctUrl": "",  # 无 PDF 附件
+            "adjunctType": None,
         },
     ],
-    "totalAnnouncement": 2,
+    "totalAnnouncement": 3,
 }
 
 
 def test_get_announcements_returns_dataframe(
     monkeypatch: pytest.MonkeyPatch, reset_orgid_cache: Any
 ) -> None:
-    """应返回 DataFrame[title, type, date, url]。"""
+    """应返回 DataFrame，含全部新字段。"""
     _patch_stock_map(monkeypatch, {"688017": "9900041602"})
     monkeypatch.setattr(
         "easy_tdx.cninfo.client._http_post_form",
@@ -232,13 +281,75 @@ def test_get_announcements_returns_dataframe(
 
     df = CninfoClient().get_announcements("688017", count=30, page=1)
     assert isinstance(df, pd.DataFrame)
-    assert list(df.columns) == ["title", "type", "date", "url"]
-    assert len(df) == 2
+    expected_cols = [
+        "title",
+        "type",
+        "date",
+        "url",
+        "code",
+        "org_id",
+        "announcement_id",
+        "announcement_time",
+        "pdf_url",
+    ]
+    assert list(df.columns) == expected_cols
+    assert len(df) == 3
+    # 第一行：正常 typeName
     assert df.iloc[0]["title"] == "关于召开2025年年度股东大会的通知"
     assert df.iloc[0]["type"] == "股东大会"
-    assert len(df.iloc[0]["date"]) == 10  # YYYY-MM-DD
-    assert df.iloc[0]["url"].endswith("abc123")
-    assert "cninfo.com.cn" in df.iloc[0]["url"]
+    assert len(df.iloc[0]["date"]) == 10
+    assert df.iloc[0]["pdf_url"].endswith("abc123.PDF")
+
+
+def test_get_announcements_type_fallback_to_adjunct_type(
+    monkeypatch: pytest.MonkeyPatch, reset_orgid_cache: Any
+) -> None:
+    """回归 Bug1：announcementTypeName 为 null 时回退 adjunctType。"""
+    _patch_stock_map(monkeypatch, {"688017": "9900041602"})
+    monkeypatch.setattr(
+        "easy_tdx.cninfo.client._http_post_form",
+        lambda url, payload, timeout=15.0: _QUERY_RESPONSE,
+    )
+    from easy_tdx.cninfo import CninfoClient
+
+    df = CninfoClient().get_announcements("688017")
+    # 第二行 typeName=null 但 adjunctType=PDF → type 应回退为 "PDF"
+    assert df.iloc[1]["type"] == "PDF"
+    # 第三行 typeName=null 且 adjunctType=null → type 为空字符串（非 nan）
+    assert df.iloc[2]["type"] == ""
+
+
+def test_get_announcements_url_has_four_params(
+    monkeypatch: pytest.MonkeyPatch, reset_orgid_cache: Any
+) -> None:
+    """回归 Bug2：URL 必须含 4 参数才能打开（否则 404）。"""
+    _patch_stock_map(monkeypatch, {"688017": "9900041602"})
+    monkeypatch.setattr(
+        "easy_tdx.cninfo.client._http_post_form",
+        lambda url, payload, timeout=15.0: _QUERY_RESPONSE,
+    )
+    from easy_tdx.cninfo import CninfoClient
+
+    df = CninfoClient().get_announcements("688017")
+    url = df.iloc[0]["url"]
+    assert "stockCode=688017" in url
+    assert "announcementId=abc123" in url
+    assert "orgId=9900041602" in url
+    assert "announcementTime=" in url
+
+
+def test_get_announcements_pdf_url(monkeypatch: pytest.MonkeyPatch, reset_orgid_cache: Any) -> None:
+    """pdf_url 应为 static.cninfo.com.cn 直链，无附件时为空。"""
+    _patch_stock_map(monkeypatch, {"688017": "9900041602"})
+    monkeypatch.setattr(
+        "easy_tdx.cninfo.client._http_post_form",
+        lambda url, payload, timeout=15.0: _QUERY_RESPONSE,
+    )
+    from easy_tdx.cninfo import CninfoClient
+
+    df = CninfoClient().get_announcements("688017")
+    assert df.iloc[0]["pdf_url"] == "http://static.cninfo.com.cn/finalpage/2026-06-14/abc123.PDF"
+    assert df.iloc[2]["pdf_url"] == ""  # 无附件
 
 
 def test_get_announcements_empty(monkeypatch: pytest.MonkeyPatch, reset_orgid_cache: Any) -> None:
@@ -253,7 +364,7 @@ def test_get_announcements_empty(monkeypatch: pytest.MonkeyPatch, reset_orgid_ca
     df = CninfoClient().get_announcements("688017")
     assert isinstance(df, pd.DataFrame)
     assert df.empty
-    assert list(df.columns) == ["title", "type", "date", "url"]
+    assert len(df.columns) == 9
 
 
 def test_get_announcements_missing_key(
@@ -340,6 +451,7 @@ def test_get_announcements_skips_non_dict_items(
                     "announcementTitle": "ok",
                     "announcementTime": 1749859200000,
                     "announcementId": "x",
+                    "adjunctUrl": "",
                 },
             ]
         },
@@ -387,6 +499,168 @@ def test_get_announcements_malformed_timestamp_wrapped_as_cninfo_error(
 
     with pytest.raises(CninfoError):
         CninfoClient().get_announcements("688017")
+
+
+# ---------------------------------------------------------------------------
+# PDF 下载
+# ---------------------------------------------------------------------------
+
+
+def _make_anno(**overrides: Any) -> Any:
+    """构造测试用 Announcement（默认有 pdf_url）。"""
+    from easy_tdx.cninfo import Announcement
+
+    defaults: dict[str, Any] = {
+        "title": "测试公告",
+        "type": "PDF",
+        "date": "2026-06-14",
+        "url": "http://x",
+        "code": "688017",
+        "org_id": "9900041602",
+        "announcement_id": "abc123",
+        "announcement_time": 1718323200000,
+        "pdf_url": "http://static.cninfo.com.cn/x.PDF",
+    }
+    defaults.update(overrides)
+    return Announcement(**defaults)
+
+
+def test_download_pdf_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """download_pdf 应写入文件并返回绝对路径。"""
+    from easy_tdx.cninfo import CninfoClient
+
+    pdf_bytes = b"%PDF-1.4\nfake pdf content"
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    def _fake_urlopen(req: Any, timeout: float = 15.0) -> _FakeResp:
+        return _FakeResp(pdf_bytes)
+
+    import easy_tdx.cninfo.client as mod
+
+    monkeypatch.setattr(mod.urlrequest, "urlopen", _fake_urlopen)
+    anno = _make_anno()
+    path = CninfoClient().download_pdf(anno, dest_dir=tmp_path)
+    assert Path(path).exists()
+    assert Path(path).read_bytes() == pdf_bytes
+    # 默认文件名格式：{date}_{announcement_id}.PDF
+    assert "abc123" in Path(path).name
+    assert Path(path).name.endswith(".PDF")
+
+
+def test_download_pdf_custom_filename(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """自定义 filename 应被使用。"""
+    from easy_tdx.cninfo import CninfoClient
+
+    class _FakeResp:
+        def read(self) -> bytes:
+            return b"%PDF-1.4"
+
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    import easy_tdx.cninfo.client as mod
+
+    monkeypatch.setattr(mod.urlrequest, "urlopen", lambda req, timeout=15.0: _FakeResp())
+    path = CninfoClient().download_pdf(_make_anno(), dest_dir=tmp_path, filename="custom.pdf")
+    assert Path(path).name == "custom.pdf"
+
+
+def test_download_pdf_no_attachment_raises() -> None:
+    """pdf_url 为空应抛 CninfoError，不触网。"""
+    from easy_tdx.cninfo import CninfoClient, CninfoError
+
+    anno = _make_anno(pdf_url="")
+    with pytest.raises(CninfoError):
+        CninfoClient().download_pdf(anno)
+
+
+def test_download_pdf_creates_dest_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """目标目录不存在应自动创建。"""
+    from easy_tdx.cninfo import CninfoClient
+
+    class _FakeResp:
+        def read(self) -> bytes:
+            return b"%PDF-1.4"
+
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    import easy_tdx.cninfo.client as mod
+
+    monkeypatch.setattr(mod.urlrequest, "urlopen", lambda req, timeout=15.0: _FakeResp())
+    nested = tmp_path / "a" / "b" / "c"
+    path = CninfoClient().download_pdf(_make_anno(), dest_dir=nested)
+    assert Path(path).exists()
+    assert nested.is_dir()
+
+
+def test_download_pdf_accepts_series(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """download_pdf 应兼容 pd.Series（DataFrame.iloc[i] 的返回类型）。"""
+    from easy_tdx.cninfo import CninfoClient
+
+    class _FakeResp:
+        def read(self) -> bytes:
+            return b"%PDF-1.4"
+
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    import easy_tdx.cninfo.client as mod
+
+    monkeypatch.setattr(mod.urlrequest, "urlopen", lambda req, timeout=15.0: _FakeResp())
+    # 模拟 DataFrame 的一行
+    row = pd.Series(
+        {
+            "title": "t",
+            "type": "PDF",
+            "date": "2026-06-14",
+            "url": "http://x",
+            "code": "688017",
+            "org_id": "9900041602",
+            "announcement_id": "abc",
+            "announcement_time": 1718323200000,
+            "pdf_url": "http://static.cninfo.com.cn/x.PDF",
+        }
+    )
+    path = CninfoClient().download_pdf(row, dest_dir=tmp_path)
+    assert Path(path).exists()
+
+
+def test_download_pdf_network_failure_wrapped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """下载网络失败应转 CninfoError。"""
+    from easy_tdx.cninfo import CninfoClient, CninfoError
+
+    def _boom(req: Any, timeout: float = 15.0) -> Any:
+        raise OSError("connection reset")
+
+    import easy_tdx.cninfo.client as mod
+
+    monkeypatch.setattr(mod.urlrequest, "urlopen", _boom)
+    with pytest.raises(CninfoError):
+        CninfoClient().download_pdf(_make_anno(), dest_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any
 from urllib import parse
@@ -22,7 +23,7 @@ from urllib import request as urlrequest
 
 import pandas as pd
 
-from .models import Announcement, CninfoError
+from .models import Announcement, CninfoError, build_detail_url, build_pdf_url
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,6 @@ _UA = (
 )
 _STOCK_MAP_URL = "http://www.cninfo.com.cn/new/data/szse_stock.json"
 _QUERY_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
-_DETAIL_URL = "https://www.cninfo.com.cn/new/disclosure/detail?annoId="
 
 # 模块级 orgId 映射缓存：首次拉取后全程复用（Cpython dict 读写原子，
 # 并发下最坏多发一次请求，可接受）
@@ -137,13 +137,86 @@ class CninfoClient:
             page: 页码（1 起始）。
 
         Returns:
-            ``DataFrame[title, type, date, url]``，按服务器返回顺序（最新在前）。
+            ``DataFrame[title, type, date, url, code, org_id, announcement_id,
+            announcement_time, pdf_url]``，按服务器返回顺序（最新在前）。
             无结果时返回空 DataFrame（含列名）。
+
+        Note:
+            ``type`` 列优先取 cninfo 的 ``announcementTypeName``；该字段对很多
+            公告为 null（数据源限制），此时回退到 ``adjunctType``（如 "PDF"），
+            再为空给空字符串。
         """
         rows = self._query_announcements(code, count=count, page=page)
+        cols = [
+            "title",
+            "type",
+            "date",
+            "url",
+            "code",
+            "org_id",
+            "announcement_id",
+            "announcement_time",
+            "pdf_url",
+        ]
         if not rows:
-            return pd.DataFrame(columns=["title", "type", "date", "url"])
+            return pd.DataFrame(columns=cols)
         return pd.DataFrame([r.__dict__ for r in rows])
+
+    def download_pdf(
+        self,
+        announcement: Announcement | pd.Series[Any],
+        dest_dir: str | os.PathLike[str] = ".",
+        *,
+        filename: str | None = None,
+    ) -> str:
+        """下载公告 PDF 附件到本地。
+
+        Args:
+            announcement: ``get_announcements`` 返回的单条记录（需含 pdf_url）。
+                也接受 ``pd.Series``（DataFrame 的一行）。
+            dest_dir: 目标目录，默认当前目录。不存在会自动创建。
+            filename: 保存文件名（不含路径）。默认 ``{date}_{announcement_id}.PDF``。
+
+        Returns:
+            下载后的本地文件绝对路径。
+
+        Raises:
+            CninfoError: 该公告无 PDF 附件（pdf_url 为空），或下载失败。
+        """
+        # 统一为字段访问：兼容 pd.Series（DataFrame.iloc[i]）和 Announcement
+        if isinstance(announcement, Announcement):
+            pdf_url = announcement.pdf_url
+            anno_time = announcement.announcement_time
+            anno_id = announcement.announcement_id
+        else:
+            # pd.Series 的 .get/__getitem__ 行为
+            pdf_url = str(announcement.get("pdf_url", "") or "")
+            anno_time = int(announcement.get("announcement_time", 0) or 0)
+            anno_id = str(announcement.get("announcement_id", "x") or "")
+
+        if not pdf_url:
+            raise CninfoError("该公告无 PDF 附件（pdf_url 为空）")
+
+        dest_dir = os.fspath(dest_dir)
+        os.makedirs(dest_dir, exist_ok=True)
+        if filename is None:
+            # announcement_time 为毫秒时间戳，转 YYYYMMDD 更可读
+            try:
+                date_str = datetime.fromtimestamp(anno_time / 1000).strftime("%Y%m%d")
+            except (OSError, ValueError, OverflowError):
+                date_str = "unknown"
+            filename = f"{date_str}_{anno_id}.PDF"
+
+        filepath = os.path.join(dest_dir, filename)
+        try:
+            req = urlrequest.Request(pdf_url, headers={"User-Agent": _UA})
+            with urlrequest.urlopen(req, timeout=self.timeout) as resp:
+                data = resp.read()
+            with open(filepath, "wb") as f:
+                f.write(data)
+        except Exception as e:  # noqa: BLE001 — 下载失败统一转领域异常
+            raise CninfoError(f"PDF 下载失败: {e}") from e
+        return os.path.abspath(filepath)
 
     def _query_announcements(self, code: str, *, count: int, page: int) -> list[Announcement]:
         """POST 公告检索接口，解析为 Announcement 列表。
@@ -177,13 +250,21 @@ class CninfoClient:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                anno_id = item.get("announcementId", "")
+                anno_id = str(item.get("announcementId", "") or "")
+                anno_time = item.get("announcementTime", 0) or 0
+                # type 回退：announcementTypeName 常为 null → adjunctType (如 "PDF")
+                type_name = item.get("announcementTypeName") or item.get("adjunctType") or ""
                 result.append(
                     Announcement(
-                        title=item.get("announcementTitle", ""),
-                        type=item.get("announcementTypeName", ""),
-                        date=_ts_to_date(item.get("announcementTime")),
-                        url=f"{_DETAIL_URL}{anno_id}",
+                        title=item.get("announcementTitle", "") or "",
+                        type=type_name,
+                        date=_ts_to_date(anno_time),
+                        url=build_detail_url(code, anno_id, org_id, anno_time),
+                        code=code,
+                        org_id=org_id,
+                        announcement_id=anno_id,
+                        announcement_time=anno_time,
+                        pdf_url=build_pdf_url(item.get("adjunctUrl", "") or ""),
                     )
                 )
             return result
