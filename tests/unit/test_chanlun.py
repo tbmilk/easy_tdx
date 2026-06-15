@@ -628,3 +628,45 @@ class TestChanlunAnalyser:
             assert bc["prev_date"] is not None
             assert date_re.match(bc["curr_date"])
             assert date_re.match(bc["prev_date"])
+
+    def test_print_table_with_dates(self) -> None:
+        """CLI table 模式应正确消费 zss/mmds/bcs 的日期字段。
+
+        用能确定性产出中枢/买卖点/背驰的数据，调 _print_table 确保不抛异常、
+        且输出中包含新增的日期标记（→ 表示日期区间）。
+        """
+        import contextlib
+        import io
+        import math
+
+        import pandas as pd
+
+        from easy_tdx.chanlun.analyser import ChanlunAnalyser
+        from easy_tdx.cli.cmd_chanlun import _print_table
+
+        dates = pd.date_range("2025-01-02", periods=40, freq="B")
+        highs = [15 + 5 * math.sin(i / 2) + i * 0.2 for i in range(40)]
+        lows = [highs[i] - 4 for i in range(40)]
+        df = pd.DataFrame(
+            {
+                "datetime": dates,
+                "open": [h - 2 for h in highs],
+                "close": [h - 1 for h in highs],
+                "high": highs,
+                "low": lows,
+                "vol": [1000] * 40,
+            }
+        )
+        d = ChanlunAnalyser(code="SZ000001", frequency="DAILY").process_klines(df).to_dict()
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_table(d)
+        out = buf.getvalue()
+
+        # 中枢/买卖点/背驰都应出现，且中枢行应含日期区间箭头
+        assert "── 中枢 ──" in out
+        assert "── 买卖点 ──" in out
+        assert "── 背驰 ──" in out
+        # 中枢行格式：[idx] <start> → <end> zg=...
+        assert "→" in out

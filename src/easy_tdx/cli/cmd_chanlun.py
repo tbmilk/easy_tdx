@@ -118,6 +118,7 @@ def _print_table(result: dict[str, Any]) -> None:
             done = "✓" if zs["done"] else "…"
             click.echo(
                 f"  [{zs['index']}] "
+                f"{zs['start_date'] or '—'} → {zs['end_date'] or '—'} "
                 f"zg={zs['zg']} zd={zs['zd']} "
                 f"gg={zs['gg']} dd={zs['dd']} "
                 f"lines={zs['line_count']} {done}"
@@ -138,14 +139,20 @@ def _print_table(result: dict[str, Any]) -> None:
     if result.get("mmds"):
         click.echo("── 买卖点 ──")
         for mmd in result["mmds"]:
-            click.echo(f"  {mmd['type']}: {mmd['msg']}")
+            click.echo(
+                f"  {mmd['type']} ({mmd['date'] or '—'}): {mmd['msg']}"
+            )
         click.echo()
 
     if result.get("bcs"):
         click.echo("── 背驰 ──")
         for bc in result["bcs"]:
             status = "✓" if bc["bc"] else "✗"
-            click.echo(f"  [{status}] {bc['type']}: {bc['msg']}")
+            prev = bc["prev_date"] or "—"
+            curr = bc["curr_date"] or "—"
+            click.echo(
+                f"  [{status}] {bc['type']} ({prev} → {curr}): {bc['msg']}"
+            )
 
     if result.get("multi_level"):
         ml = result["multi_level"]
