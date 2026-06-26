@@ -23,7 +23,7 @@ easy-tdx company-info SH 600519 "公司概况"
 easy-tdx company-info SH 600519 "分红扩股" --length 2048
 ```
 
-读正文时板块名也可换成文件名（`600519.txt`），此时 `--offset` 为文件绝对偏移。
+读正文时**只需传板块名即可读完整内容**（自动按目录 length 分块循环，大板块也一次读全），无需关心 offset/length。也可换成文件名（`600519.txt`），此时用 `--offset`/`--length` 控制。
 
 ## F10 板块完整列表
 
