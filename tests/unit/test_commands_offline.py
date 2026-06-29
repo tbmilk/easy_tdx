@@ -163,6 +163,106 @@ def test_security_quotes_parse():
     assert isinstance(q.open_amount, float)
     assert q.open_amount == 22694 * 100.0
 
+    # 股票按 2 位小数（分）报价（Issue #8）
+    assert q.decimal_point == 2
+
+
+def _build_quote_record(market: int, code: str, price_raw: int) -> bytes:
+    """构造一条 security_quotes 记录：仅 price_raw 有值，其余全置 0。
+
+    price_raw 单位是「厘」(0.001 元)，由调用方按品种精度给出：
+    股票=分(×100)，ETF/指数=厘(×1000)。
+    """
+    from easy_tdx.codec.price import put_price
+
+    rec = struct.pack("<B6sH", market, code.encode(), 0)  # market, code, active1
+    rec += put_price(price_raw)  # price_raw
+    rec += put_price(0) * 4  # last_close/open/high/low diffs
+    rec += put_price(0) * 2  # unknown_0, unknown_1
+    rec += put_price(0) * 2  # vol, cur_vol
+    rec += struct.pack("<I", 0)  # amount
+    rec += put_price(0) * 2  # s_vol, b_vol
+    rec += put_price(0) * 2  # unknown_2, unknown_3
+    rec += put_price(0) * 20  # 5 档 bid/ask diffs + vols
+    rec += struct.pack("<H", 0)  # trading_status
+    rec += put_price(0) * 4  # unknown_5-8
+    rec += struct.pack("<hH", 0, 0)  # rise_speed, active2
+    return rec
+
+
+def _build_quote_body(market: int, code: str, price_raw: int) -> bytes:
+    return b"\xb1\xcb" + struct.pack("<H", 1) + _build_quote_record(market, code, price_raw)
+
+
+def test_security_quotes_decimal_point_classification():
+    """Issue #8：价格小数位按 market+code 代码段推断。
+
+    同一代码不同市场含义不同：SZ 000001=平安银行(股票,2位)，
+    SH 000001=上证指数(3位)，故必须结合市场判断。
+    """
+    from easy_tdx.commands.security_quotes import _price_decimal_digits
+    from easy_tdx.models.enums import Market
+
+    # ETF / 基金 / 可转债 / 国债 / 指数 -> 3 位（厘）
+    assert _price_decimal_digits(Market.SZ, "159922") == 3  # 深 ETF
+    assert _price_decimal_digits(Market.SZ, "161725") == 3  # 深 LOF 基金
+    assert _price_decimal_digits(Market.SZ, "128095") == 3  # 深 可转债
+    assert _price_decimal_digits(Market.SZ, "111002") == 3  # 深 国债
+    assert _price_decimal_digits(Market.SH, "510300") == 3  # 沪 ETF
+    assert _price_decimal_digits(Market.SH, "511990") == 3  # 沪 货币基金
+    assert _price_decimal_digits(Market.SH, "000001") == 3  # 上证指数
+    assert _price_decimal_digits(Market.SH, "000300") == 3  # 沪深 300 指数
+
+    # 股票 -> 2 位（分）
+    assert _price_decimal_digits(Market.SZ, "000001") == 2  # 深主板（平安银行）
+    assert _price_decimal_digits(Market.SZ, "002594") == 2  # 中小板
+    assert _price_decimal_digits(Market.SZ, "300750") == 2  # 创业板
+    assert _price_decimal_digits(Market.SH, "600000") == 2  # 沪主板
+    assert _price_decimal_digits(Market.SH, "688981") == 2  # 科创板
+
+
+def test_security_quotes_etf_price_not_inflated_10x():
+    """Issue #8：ETF 价格必须按 3 位小数解析，不能仍被放大 10 倍。
+
+    159922 现价 6.123 元 → price_raw=6123（厘）。错误地按 /100 解析会得到 61.23。
+    """
+    from easy_tdx.commands.security_quotes import GetSecurityQuotesCmd
+    from easy_tdx.models.enums import Market
+
+    body = _build_quote_body(int(Market.SZ), "159922", 6123)
+    q = GetSecurityQuotesCmd([(Market.SZ, "159922")]).parse_response(body)[0]
+
+    assert q.decimal_point == 3
+    assert abs(q.price - 6.123) < 1e-9
+    assert q.price < 10.0  # 不能是 61.23 这种被放大 10 倍的值
+
+
+def test_security_quotes_stock_price_unchanged():
+    """Issue #8 回归保护：股票仍按 2 位小数解析，行为不变。
+
+    600000 现价 9.89 元 → price_raw=989（分）。
+    """
+    from easy_tdx.commands.security_quotes import GetSecurityQuotesCmd
+    from easy_tdx.models.enums import Market
+
+    body = _build_quote_body(int(Market.SH), "600000", 989)
+    q = GetSecurityQuotesCmd([(Market.SH, "600000")]).parse_response(body)[0]
+
+    assert q.decimal_point == 2
+    assert abs(q.price - 9.89) < 1e-9
+
+
+def test_security_quotes_index_price_3_digits():
+    """Issue #8：上证指数 SH000001 现价 3123.456 → 按 3 位小数解析。"""
+    from easy_tdx.commands.security_quotes import GetSecurityQuotesCmd
+    from easy_tdx.models.enums import Market
+
+    body = _build_quote_body(int(Market.SH), "000001", 3123456)
+    q = GetSecurityQuotesCmd([(Market.SH, "000001")]).parse_response(body)[0]
+
+    assert q.decimal_point == 3
+    assert abs(q.price - 3123.456) < 1e-6
+
 
 # ---------------------------------------------------------------------------
 # minute_time

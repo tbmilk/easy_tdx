@@ -14,6 +14,45 @@ from ..models.quote import SecurityQuote
 from .base import BaseCommand
 
 
+def _price_decimal_digits(market: Market, code: str) -> int:
+    """推断某证券报价的有效小数位数。
+
+    通达信协议中，price 及各档差分均以「厘」(0.001 元) 为基本单位编码，
+    但报价精度按品种而异：股票 2 位（分），指数/ETF/基金/可转债/国债/国债逆回购 3 位（厘）。
+    若一律按 /100 解析，ETF/指数等品种价格会被放大 10 倍（见 Issue #8）。
+
+    decimal_point 不在行情响应包内，只能凭 market + code 代码段推断。
+    注意同一代码不同市场含义不同：SZ 000001=平安银行(股票,2位)，
+    SH 000001=上证指数(3位)，故必须结合市场判断。
+
+    Returns:
+        2 或 3
+    """
+    code = (code or "").strip().rstrip("\x00")
+
+    # 上海：5 开头为基金/国债，0/3/8/9 开头需看前缀
+    if market == Market.SH:
+        if code.startswith("5"):  # 51x ETF、55x 货币基金、56x 跨境ETF、58x 科创ETF
+            return 3
+        if code.startswith("000"):  # 000001 上证指数、000300 沪深300 等
+            return 3
+        if code.startswith("8"):  # 880xxx 行业指数
+            return 3
+        return 2  # 60xxxx / 68xxxx 科创板 A 股
+
+    # 深圳：1/3 开头的 15x/16x/18x 为基金，12x 为可转债，11x 为国债
+    if market == Market.SZ:
+        if code.startswith("1"):  # 159 ETF、163/165/166/167 基金、128 可转债、111/112/113 国债
+            return 3
+        if code.startswith("3"):  # 300/301 创业板（股票）
+            return 2
+        # 000/001/002/003 主板、中小板 A 股
+        return 2
+
+    # 北京：暂按 A 股 2 位处理
+    return 2
+
+
 def _format_server_time(raw: int) -> str:
     """将 reversed_bytes0 整数转换为 HH:MM:SS.mmm 字符串。
 
@@ -144,21 +183,25 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
             )
             pos += 4
 
-            p = price_raw / 100.0
             try:
                 market = Market(market_b)
             except ValueError as e:
                 raise TdxDecodeError(f"security_quotes 非法 market 值: {market_b}") from e
 
+            code = code_b.decode("utf-8").rstrip("\x00")
+            # 价格按品种有效小数位解析：股票/100，指数·ETF·基金/可转债/国债/1000（Issue #8）
+            divisor = 10 ** _price_decimal_digits(market, code)
+            p = price_raw / divisor
+
             results.append(
                 SecurityQuote(
                     market=market,
-                    code=code_b.decode("utf-8").rstrip("\x00"),
+                    code=code,
                     price=p,
-                    pre_close=(price_raw + last_close_diff) / 100.0,
-                    open=(price_raw + open_diff) / 100.0,
-                    high=(price_raw + high_diff) / 100.0,
-                    low=(price_raw + low_diff) / 100.0,
+                    pre_close=(price_raw + last_close_diff) / divisor,
+                    open=(price_raw + open_diff) / divisor,
+                    high=(price_raw + high_diff) / divisor,
+                    low=(price_raw + low_diff) / divisor,
                     vol=float(vol),
                     cur_vol=float(cur_vol),
                     amount=amount,
@@ -166,29 +209,30 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
                     b_vol=float(b_vol),
                     active1=active1,
                     active2=active2,
-                    bid1=(price_raw + bid1_d) / 100.0,
+                    bid1=(price_raw + bid1_d) / divisor,
                     bid_vol1=float(bv1),
-                    bid2=(price_raw + bid2_d) / 100.0,
+                    bid2=(price_raw + bid2_d) / divisor,
                     bid_vol2=float(bv2),
-                    bid3=(price_raw + bid3_d) / 100.0,
+                    bid3=(price_raw + bid3_d) / divisor,
                     bid_vol3=float(bv3),
-                    bid4=(price_raw + bid4_d) / 100.0,
+                    bid4=(price_raw + bid4_d) / divisor,
                     bid_vol4=float(bv4),
-                    bid5=(price_raw + bid5_d) / 100.0,
+                    bid5=(price_raw + bid5_d) / divisor,
                     bid_vol5=float(bv5),
-                    ask1=(price_raw + ask1_d) / 100.0,
+                    ask1=(price_raw + ask1_d) / divisor,
                     ask_vol1=float(av1),
-                    ask2=(price_raw + ask2_d) / 100.0,
+                    ask2=(price_raw + ask2_d) / divisor,
                     ask_vol2=float(av2),
-                    ask3=(price_raw + ask3_d) / 100.0,
+                    ask3=(price_raw + ask3_d) / divisor,
                     ask_vol3=float(av3),
-                    ask4=(price_raw + ask4_d) / 100.0,
+                    ask4=(price_raw + ask4_d) / divisor,
                     ask_vol4=float(av4),
-                    ask5=(price_raw + ask5_d) / 100.0,
+                    ask5=(price_raw + ask5_d) / divisor,
                     ask_vol5=float(av5),
                     rise_speed=rise_speed_raw / 100.0,
                     limit_up=None,
                     limit_down=None,
+                    decimal_point=_price_decimal_digits(market, code),
                     unknown_2=unknown_2,
                     unknown_3=unknown_3,
                     unknown_5=unknown_5,

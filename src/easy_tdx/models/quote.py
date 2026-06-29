@@ -66,6 +66,9 @@ class SecurityQuote:
     limit_up: float | None  # 涨停价（业务规则计算）
     limit_down: float | None  # 跌停价（业务规则计算）
 
+    # 价格有效小数位（2=股票按分, 3=指数/ETF/基金/可转债/国债按厘，Issue #8）
+    decimal_point: int = field(default=2, repr=False)
+
     # 协议原始值（含义已确认，保留以供高级分析）
     unknown_2: int = field(default=0, repr=False)  # 指数: IndexOpenAmount/100; 个股: 舍入残差
     unknown_3: int = field(default=0, repr=False)  # 个股: StockOpenAmount/100; 指数: 负值
