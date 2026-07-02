@@ -322,30 +322,49 @@ async def _fetch_portfolio_bars(
 ) -> list[Any]:
     """逐个标的取 K 线并组装 StockData 列表（async，必须在 event loop 内调用）。
 
-    单个标的取数失败时跳过（不中断整个组合），全部失败返回空列表。
+    当 start_date 超出单次 800 根覆盖范围时，自动翻页拉取（与前端 fetchBars
+    同逻辑）。单个标的取数失败时跳过（不中断整个组合），全部失败返回空列表。
     """
     from easy_tdx.backtest.portfolio_engine import StockData
     from easy_tdx.web.convert import category_from_str, market_from_str
 
+    max_pages = 10  # 翻页上限：10 × 800 = 8000 根
     stock_data_list: list[StockData] = []
     for symbol in stocks:
         market_str, code = symbol.split(":", 1)
-        try:
-            df = await client.get_security_bars(
-                market_from_str(market_str),
-                code,
-                category_from_str(category),
-                0,
-                800,  # 固定拉满，前端按日期过滤
-            )
-        except Exception:
-            continue  # 单个标的失败不中断
-        if len(df) < 2:
+        frames: list[pd.DataFrame] = []
+        for page in range(max_pages):
+            try:
+                page_df = await client.get_security_bars(
+                    market_from_str(market_str),
+                    code,
+                    category_from_str(category),
+                    page * 800,
+                    800,
+                )
+            except Exception:
+                break  # 单页失败则停止该标的的翻页
+            if len(page_df) == 0:
+                break
+            frames.append(page_df)
+            # 已覆盖到 start_date（本页最早一根 ≤ start_date）则停止
+            if start_date and len(page_df) > 0:
+                dt_col = "datetime" if "datetime" in page_df.columns else "date"
+                oldest = str(page_df[dt_col].iloc[-1])[:10]
+                if oldest <= start_date:
+                    break
+            if len(page_df) < 800:
+                break  # 数据起点
+
+        if not frames:
             continue
+        df = pd.concat(frames, ignore_index=True)
         # 列名归一化：日线返回 date，分钟线返回 datetime
         if "datetime" not in df.columns and "date" in df.columns:
             df = df.copy()
             df["datetime"] = df["date"]
+        # 翻页拼接后按时间正序排序（页间逆序）
+        df = df.sort_values("datetime").reset_index(drop=True)
         # 日期范围过滤
         if start_date or end_date:
             dt_str = df["datetime"].astype(str).str.slice(0, 10)

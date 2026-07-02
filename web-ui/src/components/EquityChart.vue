@@ -41,6 +41,7 @@ function buildOption(): echarts.EChartsCoreOption {
       data: dates,
       boundaryGap: false,
       axisLine: { onZero: false },
+      axisLabel: { formatter: (v: string) => v },
     },
     yAxis: [
       {

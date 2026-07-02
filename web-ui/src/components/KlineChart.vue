@@ -82,6 +82,11 @@ function buildOption(): echarts.EChartsCoreOption {
       boundaryGap: true,
       axisLine: { onZero: false },
       splitLine: { show: false },
+      // 强制显示原始日期字符串，避免 ECharts 把 "2024-01-15" 当时间对象
+      // 解析后默认按 {MM}-{dd} {HH}:{mm} 显示（丢年份）
+      axisLabel: {
+        formatter: (v: string) => v,
+      },
     },
     yAxis: {
       scale: true,

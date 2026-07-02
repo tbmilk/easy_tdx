@@ -41,7 +41,12 @@ function buildOption(): echarts.EChartsCoreOption {
     },
     legend: { top: 0, data: seriesData.map((s) => s.name) },
     grid: { left: '8%', right: '5%', top: 30, bottom: 50 },
-    xAxis: { type: 'category', data: allDates, boundaryGap: false },
+    xAxis: {
+      type: 'category',
+      data: allDates,
+      boundaryGap: false,
+      axisLabel: { formatter: (v: string) => v },
+    },
     yAxis: {
       type: 'value',
       scale: true,
