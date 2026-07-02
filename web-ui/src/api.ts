@@ -86,11 +86,15 @@ export async function fetchBars(
     if (pageBars.length < 800) break
   }
 
-  // 按日期范围过滤（闭区间）
-  let bars = allBars
-  if (startDate) bars = bars.filter((b) => b.datetime.slice(0, 10) >= startDate)
-  if (endDate) bars = bars.filter((b) => b.datetime.slice(0, 10) <= endDate)
-  return bars
+    // 按日期范围过滤（闭区间）
+    let bars = allBars
+    if (startDate) bars = bars.filter((b) => b.datetime.slice(0, 10) >= startDate)
+    if (endDate) bars = bars.filter((b) => b.datetime.slice(0, 10) <= endDate)
+    // 翻页拼接后按时间正序排序：每页内部是正序，但页间是逆序
+    // （page1=最新段，page2=更旧段），concat 后需排序保证整体正序，
+    // 否则引擎/图表只正确处理第一页的数据。
+    bars.sort((a, b) => a.datetime.localeCompare(b.datetime))
+    return bars
 }
 
 /** 把后端 bars 的单条记录归一化为统一 Bar（datetime 字段）。 */
