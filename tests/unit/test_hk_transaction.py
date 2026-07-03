@@ -127,16 +127,16 @@ def test_map_record_nature_to_bs_flag():
 @pytest.mark.parametrize(
     "market,expected",
     [
-        (31, True),   # HK_MAIN_BOARD
-        (48, True),   # HK_GEM
-        (49, True),   # HK_FUND
-        (71, True),   # HK_STOCK_GGT
-        (98, True),   # HK_DARK_POOL
-        (27, True),   # HK_INDEX
+        (31, True),  # HK_MAIN_BOARD
+        (48, True),  # HK_GEM
+        (49, True),  # HK_FUND
+        (71, True),  # HK_STOCK_GGT
+        (98, True),  # HK_DARK_POOL
+        (27, True),  # HK_INDEX
         (47, False),  # CFFEX_FUTURES（期货，保持 0x122F）
         (74, False),  # US_STOCK（美股，保持 0x122F）
         (23, False),  # HK_FINANCIAL_FUTURES（衍生品不在本次路由范围）
-        (0, False),   # 沪深京 A 股市场代码
+        (0, False),  # 沪深京 A 股市场代码
         (1, False),
         (2, False),
     ],
@@ -228,9 +228,7 @@ def test_goods_transaction_non_hk_keeps_0x122f():
         captured.append(cmd)
         # 0x122F 返回 MacTransaction 列表
         return [
-            MacTransaction(
-                time=time(14, 56, 35), price=3850.0, vol=1, trade_count=1, bs_flag=0
-            )
+            MacTransaction(time=time(14, 56, 35), price=3850.0, vol=1, trade_count=1, bs_flag=0)
         ]
 
     client = object.__new__(MacExClient)
@@ -323,9 +321,7 @@ async def test_async_goods_transaction_non_hk_keeps_0x122f():
     async def fake_execute(cmd):
         captured.append(cmd)
         return [
-            MacTransaction(
-                time=time(14, 56, 35), price=3850.0, vol=1, trade_count=1, bs_flag=0
-            )
+            MacTransaction(time=time(14, 56, 35), price=3850.0, vol=1, trade_count=1, bs_flag=0)
         ]
 
     client = object.__new__(AsyncMacExClient)
@@ -337,4 +333,3 @@ async def test_async_goods_transaction_non_hk_keeps_0x122f():
     assert isinstance(captured[0], SymbolTransactionCmd)
     assert len(df) == 1
     assert df["price"].iloc[0] == pytest.approx(3850.0)
-
