@@ -156,3 +156,60 @@ async def _fetch_hk_transactions_async(
         if len(batch) < page_size:
             break
     return results
+
+
+# 全量翻页的安全上限：50 页 × 1800 = 90000 条，覆盖港股单日成交峰值绰绰有余。
+# 超过即停，防止异常数据（如服务器循环返回）导致无限翻页。
+_HK_TRANSACTION_MAX_PAGES = 50
+
+
+def _fetch_all_hk_transactions_sync(
+    execute_fn: SyncExecute[list[ExTransactionRecord]],
+    market: int,
+    code: str,
+    query_date: date | None,
+    start: int = 0,
+) -> list[MacTransaction]:
+    """同步获取港股某日**全部**逐笔成交（自动翻页直至末页）。
+
+    0x23FC/0x2406 响应不含 total 字段，只能按页翻到不足一页或空为止。
+    返回顺序与协议一致（倒序：start=0 为最新/收盘方向）。
+    """
+    ymd = _to_ymd(query_date) if query_date is not None else None
+
+    results: list[MacTransaction] = []
+    offset = start
+    for _ in range(_HK_TRANSACTION_MAX_PAGES):
+        cmd = _build_cmd(market, code, ymd, offset, _HK_TRANSACTION_PAGE_SIZE)
+        batch = execute_fn(cmd)
+        if not batch:
+            break
+        results.extend(_map_record(r) for r in batch)
+        offset += len(batch)
+        if len(batch) < _HK_TRANSACTION_PAGE_SIZE:
+            break  # 末页
+    return results
+
+
+async def _fetch_all_hk_transactions_async(
+    execute_fn: AsyncExecute[list[ExTransactionRecord]],
+    market: int,
+    code: str,
+    query_date: date | None,
+    start: int = 0,
+) -> list[MacTransaction]:
+    """异步获取港股某日**全部**逐笔成交。语义同同步版 :func:`_fetch_all_hk_transactions_sync`。"""
+    ymd = _to_ymd(query_date) if query_date is not None else None
+
+    results: list[MacTransaction] = []
+    offset = start
+    for _ in range(_HK_TRANSACTION_MAX_PAGES):
+        cmd = _build_cmd(market, code, ymd, offset, _HK_TRANSACTION_PAGE_SIZE)
+        batch = await execute_fn(cmd)
+        if not batch:
+            break
+        results.extend(_map_record(r) for r in batch)
+        offset += len(batch)
+        if len(batch) < _HK_TRANSACTION_PAGE_SIZE:
+            break  # 末页
+    return results

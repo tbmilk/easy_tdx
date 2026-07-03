@@ -2,6 +2,22 @@
 
 本文件记录 easy-tdx 的版本变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.17.6] — 2026-07-04
+
+**港股逐笔成交：补充 start 倒序语义文档 + 新增 goods_transaction_all 全量取数** —— 回应 issue #14 后用户反馈：默认 `count=2000` 取回的成交记录时间全集中在尾盘（如 02715 全天成交 13327 笔，count=2000 只取到最近 2000 笔）。根因是通达信逐笔协议（A 股 0x122F 与港股 ex 0x23FC/0x2406 一致）的 `start` 为**倒序**语义——start=0 指向最新一笔（收盘方向），并非 bug。本次：补 docstring 说明 start 语义；新增 `goods_transaction_all` 自动翻页取全天全部成交。**867 单测全绿**（+5），ruff format/check / mypy strict 通过。
+
+### 新增
+
+- **`goods_transaction_all`（全量取数）**（`src/easy_tdx/ex/mac_client.py` 同步 + 异步、`src/easy_tdx/ex/_hk_transaction.py` 新增 `_fetch_all_hk_transactions_sync/async`）—— 港股股票类市场专用，自动按 1800/页翻页直至末页（不足一页或空即停），返回当日全部逐笔成交（港股单日常 1~5 万笔）。安全上限 50 页（90000 条）防止异常数据导致无限翻页。返回顺序为协议原生倒序（最新在前）；需正序展示由调用方自行 `df.iloc[::-1]`。market 非港股股票类时抛 `ValueError`。
+
+### 变更
+
+- **`goods_transaction` docstring 补 start 倒序语义**（`src/easy_tdx/ex/mac_client.py`）—— 明确说明 `start=0` 指向最新一笔（收盘方向），与 A 股 0x122F 语义一致；提示 `count=2000` 默认只取最近 2000 笔会集中在尾盘，需全天数据请用 `goods_transaction_all`。
+
+### 修复
+
+- **CI ruff format 失败**（`tests/unit/test_hk_transaction.py`）—— 1.17.5 引入的测试文件未过 `ruff format --check`（参数化注释前双空格、MacTransaction 单行化、文末空行）。本次顺手修复。
+
 ## [1.17.5] — 2026-07-04
 
 **港股逐笔成交协议路由修复** —— 修复 issue #14：`MacExClient.goods_transaction` 对港股市场（HK 主板 / 创业板 / 指数 / 基金 / 港股通 / 暗盘）返回空。根因是对所有扩展市场统一复用了 A 股 MAC 协议的 `SymbolTransactionCmd`（0x122F），而 0x122F 的数据源未接入港股，服务器对港股 market 一律返回 39 字节空响应（count=0）。改为对港股股票类市场路由到 ex 扩展行情协议（当日 0x23FC / 历史 0x2406），并把整数价格换算为港元浮点。**860 单测全绿**（+22），ruff / mypy strict 通过。

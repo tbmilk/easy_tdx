@@ -27,6 +27,8 @@ from ..mac.commands.symbol_transaction import SymbolTransactionCmd
 from ..mac.enums import Adjust, Period, SortOrder, SortType
 from ..mac.models import MacQuoteField
 from ._hk_transaction import (
+    _fetch_all_hk_transactions_async,
+    _fetch_all_hk_transactions_sync,
     _fetch_hk_transactions_async,
     _fetch_hk_transactions_sync,
     is_hk_stock_market,
@@ -426,9 +428,12 @@ class MacExClient:
         query_date : date | None
             查询日期，None 表示今天。
         start : int
-            起始偏移。
+            起始偏移。**注意：通达信逐笔协议为倒序**——``start=0`` 指向最新一笔
+            （收盘方向），``start`` 越大越早。A 股 0x122F 与港股 ex 协议语义一致。
         count : int
-            返回条数。
+            返回条数。港股单日成交常达数万笔（如 02715 约 1.3 万笔/日），默认
+            ``count=2000`` 只取最近 2000 笔，会集中在尾盘时段。若需全天全部成交，
+            请改用 :meth:`goods_transaction_all`。
 
         Note
         ----
@@ -452,6 +457,42 @@ class MacExClient:
             count=count,
         )
         result = self._execute(cmd)
+        return _to_df(result)
+
+    def goods_transaction_all(
+        self,
+        market: int,
+        code: str,
+        query_date: date | None = None,
+    ) -> pd.DataFrame:
+        """获取港股某日**全部**逐笔成交（仅港股股票类市场，自动翻页取全天）。
+
+        与 :meth:`goods_transaction` 的区别：不受 ``count`` 上限约束，自动翻页直至
+        末页，返回当日所有逐笔成交（港股单日常 1~5 万笔）。返回顺序仍为协议原生
+        倒序（最新在前）；如需正序展示，调用方自行 ``df.iloc[::-1]`` 反转。
+
+        Parameters
+        ----------
+        market : int
+            ExMarket 枚举值（须为港股股票类市场，见
+            :data:`easy_tdx.ex._hk_transaction.HK_STOCK_MARKETS`）。
+        code : str
+            证券代码。
+        query_date : date | None
+            查询日期，None 表示今天。
+
+        Raises
+        ------
+        ValueError
+            ``market`` 不属于港股股票类市场时抛出（本方法专为港股设计；其他扩展
+            市场请用 :meth:`goods_transaction`）。
+        """
+        if not is_hk_stock_market(market):
+            raise ValueError(
+                f"goods_transaction_all 仅支持港股股票类市场（HK_STOCK_MARKETS），"
+                f"收到 market={market}；其他市场请用 goods_transaction。"
+            )
+        result = _fetch_all_hk_transactions_sync(self._execute, market, code, query_date)
         return _to_df(result)
 
 
@@ -739,7 +780,10 @@ class AsyncMacExClient(AsyncHeartbeatMixin):
         start: int = 0,
         count: int = 2000,
     ) -> pd.DataFrame:
-        """获取逐笔成交数据（异步）。路由说明见同步版 :meth:`goods_transaction`。"""
+        """获取逐笔成交数据（异步）。
+
+        路由与 ``start`` 倒序语义见同步版 :meth:`goods_transaction`。
+        """
         if is_hk_stock_market(market):
             result = await _fetch_hk_transactions_async(
                 self._execute, market, code, query_date, start, count
@@ -753,4 +797,19 @@ class AsyncMacExClient(AsyncHeartbeatMixin):
             count=count,
         )
         result = await self._execute(cmd)
+        return _to_df(result)
+
+    async def goods_transaction_all(
+        self,
+        market: int,
+        code: str,
+        query_date: date | None = None,
+    ) -> pd.DataFrame:
+        """获取港股某日全部逐笔成交（异步）。语义见同步版 :meth:`goods_transaction_all`。"""
+        if not is_hk_stock_market(market):
+            raise ValueError(
+                f"goods_transaction_all 仅支持港股股票类市场（HK_STOCK_MARKETS），"
+                f"收到 market={market}；其他市场请用 goods_transaction。"
+            )
+        result = await _fetch_all_hk_transactions_async(self._execute, market, code, query_date)
         return _to_df(result)

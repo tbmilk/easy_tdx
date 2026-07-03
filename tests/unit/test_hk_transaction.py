@@ -333,3 +333,101 @@ async def test_async_goods_transaction_non_hk_keeps_0x122f():
     assert isinstance(captured[0], SymbolTransactionCmd)
     assert len(df) == 1
     assert df["price"].iloc[0] == pytest.approx(3850.0)
+
+
+# ---------------------------------------------------------------------------
+# 6. goods_transaction_all 全量取数（mock _execute，离线）
+# ---------------------------------------------------------------------------
+
+
+def test_goods_transaction_all_paginates_until_short_page():
+    """全量取数：翻页直到某页返回不足 page_size（末页）即停。"""
+    from easy_tdx.ex.mac_client import MacExClient
+
+    page_calls: list[int] = []  # 记录每页的 start
+
+    def fake_execute(cmd):
+        page_calls.append(cmd.start)
+        # 前 3 页满页（1800），第 4 页返回 500（末页）
+        if cmd.start < 1800 * 3:
+            return _build_fake_records(cmd.count)
+        return _build_fake_records(500)
+
+    client = object.__new__(MacExClient)
+    client._execute = fake_execute  # type: ignore[method-assign]
+
+    df = client.goods_transaction_all(31, "00700", date(2026, 7, 3))
+
+    assert len(page_calls) == 4  # 3 满页 + 1 末页
+    assert page_calls == [0, 1800, 3600, 5400]
+    assert len(df) == 1800 * 3 + 500
+
+
+def test_goods_transaction_all_stops_on_empty():
+    """全量取数：第一页空（休市日/无数据）应立即返回空。"""
+    from easy_tdx.ex.mac_client import MacExClient
+
+    call_count = 0
+
+    def fake_execute(cmd):
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    client = object.__new__(MacExClient)
+    client._execute = fake_execute  # type: ignore[method-assign]
+
+    df = client.goods_transaction_all(31, "00700", date(2026, 7, 1))
+
+    assert call_count == 1
+    assert len(df) == 0
+
+
+def test_goods_transaction_all_rejects_non_hk_market():
+    """全量取数仅限港股股票类市场；其他市场应报 ValueError。"""
+    from easy_tdx.ex.mac_client import MacExClient
+
+    client = object.__new__(MacExClient)
+    client._execute = lambda cmd: []  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="港股股票类市场"):
+        client.goods_transaction_all(47, "IFL0")  # CFFEX 期货
+
+
+@pytest.mark.asyncio
+async def test_async_goods_transaction_all_paginates():
+    """异步全量取数也按页翻到末页停止。"""
+    from easy_tdx.ex.mac_client import AsyncMacExClient
+
+    page_calls: list[int] = []
+
+    async def fake_execute(cmd):
+        page_calls.append(cmd.start)
+        # 前 1 页满页，第 2 页返回 100（末页）
+        if cmd.start == 0:
+            return _build_fake_records(cmd.count)
+        return _build_fake_records(100)
+
+    client = object.__new__(AsyncMacExClient)
+    client._execute = fake_execute  # type: ignore[method-assign]
+
+    df = await client.goods_transaction_all(31, "00700", date(2026, 7, 3))
+
+    assert page_calls == [0, 1800]
+    assert len(df) == 1800 + 100
+
+
+@pytest.mark.asyncio
+async def test_async_goods_transaction_all_rejects_non_hk():
+    """异步全量取数：非港股市场报 ValueError。"""
+    from easy_tdx.ex.mac_client import AsyncMacExClient
+
+    client = object.__new__(AsyncMacExClient)
+
+    async def fake_execute(cmd):
+        return []
+
+    client._execute = fake_execute  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="港股股票类市场"):
+        await client.goods_transaction_all(74, "AAPL")  # 美股
