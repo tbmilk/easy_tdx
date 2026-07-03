@@ -14,7 +14,7 @@ FIXTURES = pathlib.Path(__file__).parent.parent / "fixtures"
 
 
 def load_hex(name: str) -> bytes:
-    return bytes.fromhex((FIXTURES / f"{name}.hex").read_text().strip())
+    return bytes.fromhex((FIXTURES / f"{name}.hex").read_text(encoding="utf-8").strip())
 
 
 # ---------------------------------------------------------------------------

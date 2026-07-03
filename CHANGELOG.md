@@ -2,6 +2,14 @@
 
 本文件记录 easy-tdx 的版本变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.17.7] — 2026-07-04
+
+**修复 Windows CI：fixture 文件读取编码** —— 1.17.5 引入的 `tests/fixtures/ex_history_transaction.json` 含中文注释，Windows CI 默认用 cp1252 解码 UTF-8 文件触发 `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`，导致 3 个 Windows 矩阵（3.10/3.12/3.13）的 `test_parse_ex_history_transaction_hk` 失败。统一为 fixture 读取显式指定 `encoding="utf-8"`。**867 单测全绿**，ruff format/check / mypy strict 通过，Windows + Linux 矩阵均转绿。
+
+### 修复
+
+- **Windows fixture 读取编码**（`tests/unit/test_hk_transaction.py` `load_hex`/`load_json`、`tests/unit/test_commands_offline.py` `load_hex`、`tests/unit/test_decode_errors.py` `_load_hex`）—— 所有 fixture 文件读取显式指定 `encoding="utf-8"`，避免 Windows 默认 cp1252 编码读取含中文 fixture 时 `UnicodeDecodeError`。`test_commands_offline` 与 `test_decode_errors` 的 hex 文件虽为纯 ASCII 当前未触发，但一并修复以统一编码规范、防范未来回归。
+
 ## [1.17.6] — 2026-07-04
 
 **港股逐笔成交：补充 start 倒序语义文档 + 新增 goods_transaction_all 全量取数** —— 回应 issue #14 后用户反馈：默认 `count=2000` 取回的成交记录时间全集中在尾盘（如 02715 全天成交 13327 笔，count=2000 只取到最近 2000 笔）。根因是通达信逐笔协议（A 股 0x122F 与港股 ex 0x23FC/0x2406 一致）的 `start` 为**倒序**语义——start=0 指向最新一笔（收盘方向），并非 bug。本次：补 docstring 说明 start 语义；新增 `goods_transaction_all` 自动翻页取全天全部成交。**867 单测全绿**（+5），ruff format/check / mypy strict 通过。

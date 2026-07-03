@@ -17,7 +17,7 @@ FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 
 def _load_hex(name: str) -> bytes:
-    return bytes.fromhex((FIXTURES / f"{name}.hex").read_text().strip())
+    return bytes.fromhex((FIXTURES / f"{name}.hex").read_text(encoding="utf-8").strip())
 
 
 def test_security_count_truncated_raises_tdxdecodeerror() -> None:
