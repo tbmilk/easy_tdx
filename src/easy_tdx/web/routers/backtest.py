@@ -561,62 +561,134 @@ def _run_optimize(df: pd.DataFrame, req: OptimizeBacktestRequest) -> dict[str, A
     return result.to_dict()
 
 
+def _optimize_one_strategy(
+    strategy_name: str,
+    grid: dict[str, list[Any]],
+    df: pd.DataFrame,
+    cash: float,
+    commission: float,
+    slippage: float,
+    execution: str,
+) -> dict[str, Any] | None:
+    """跑单个策略的网格寻优，返回其最优点摘要（模块顶层，可被 ProcessPoolExecutor pickle）。
+
+    必须是模块级顶层函数：Windows 下 ProcessPoolExecutor 用 spawn 方式启动子进程，
+    子进程按 ``module.qualname`` 重新 import 本函数。lambda / 闭包 / 嵌套函数不可 pickle。
+
+    策略类（``registry.get(name).build()``）在子进程内构造，从不跨进程传递，
+    因此天然避开了 screen scanner 当年遇到的"策略类不可 pickle"问题。
+    返回纯 dict（所有值都是 JSON 原生类型），可安全 pickle 回主进程。
+    """
+    from easy_tdx.backtest.optimizer import ParamGridOptimizer
+
+    try:
+        optimizer = ParamGridOptimizer(
+            strategy_name=strategy_name,
+            param_grid=grid,
+            df=df,
+            cash=cash,
+            commission=commission,
+            slippage=slippage,
+            execution=execution,
+        )
+    except ValueError:
+        # 单策略网格超限（不应发生，预设已控制规模）→ 跳过
+        return None
+
+    result = optimizer.run()
+    if result.best is None:
+        return None
+
+    return {
+        "strategy": strategy_name,
+        "params": result.best.params,
+        "total_return": result.best.total_return,
+        "sharpe": result.best.sharpe,
+        "max_drawdown": result.best.max_drawdown,
+        "total_trades": result.best.total_trades,
+        "win_rate": result.best.win_rate,
+        "profit_factor": result.best.profit_factor,
+        "grid_points": len(result.results),
+    }
+
+
 def _run_optimize_all(df: pd.DataFrame, req: OptimizeAllBacktestRequest) -> dict[str, Any]:
     """对所有策略的预设网格逐策略寻优，汇总成全局排名（后台线程内调用）。
 
     遍历 ``STRATEGY_PRESETS`` 中每个策略，用其预设参数网格跑
     :class:`ParamGridOptimizer`，取各策略的最优点（best）组装排名。单个策略
     无有效结果（如全网格回测失败）则跳过。
+
+    并发：``req.workers >= 2`` 时用 ``ProcessPoolExecutor`` 跨进程并行寻优
+    （回测是 CPU-bound，numpy/pandas 持 GIL，线程无加速，必须用进程）。
+    ``workers`` 为 0 或 1 时串行。进程池在函数内 ``with`` 创建/销毁，对前端
+    轮询与 task_runner 透明。
     """
-    from easy_tdx.backtest.optimizer import ParamGridOptimizer
     from easy_tdx.backtest.strategies import get_registry
     from easy_tdx.backtest.strategies.presets import STRATEGY_PRESETS
 
     registry = get_registry()
+    # 过滤出已注册的策略 + 解析 label（label 必须在主进程取，避免子进程各自解析不一致）
+    jobs: list[tuple[str, dict[str, list[Any]]]] = []
+    labels: dict[str, str] = {}
+    for strategy_name, grid in STRATEGY_PRESETS.items():
+        if strategy_name not in registry.names():
+            continue
+        labels[strategy_name] = registry.get(strategy_name).label
+        jobs.append((strategy_name, grid))
+
+    # 跑寻优：串行 or 进程池并行
+    raw_results: list[dict[str, Any]] = []
+    if req.workers and req.workers >= 2:
+        import concurrent.futures
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=req.workers) as executor:
+            futures = {
+                executor.submit(
+                    _optimize_one_strategy,
+                    name,
+                    grid,
+                    df,
+                    req.cash,
+                    req.commission,
+                    req.slippage,
+                    req.execution,
+                ): name
+                for name, grid in jobs
+            }
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res is not None:
+                    raw_results.append(res)
+    else:
+        for name, grid in jobs:
+            res = _optimize_one_strategy(
+                name, grid, df, req.cash, req.commission, req.slippage, req.execution
+            )
+            if res is not None:
+                raw_results.append(res)
+
+    # 组装排名（主进程统一构造 Pydantic 模型，保证类型一致）
     ranking: list[OptimizeAllRankEntry] = []
     per_strategy: dict[str, OptimizeAllRankEntry] = {}
     total_grid = 0
-
-    for strategy_name, grid in STRATEGY_PRESETS.items():
-        # 预设里登记但未注册的策略跳过（理论上不应发生）
-        if strategy_name not in registry.names():
-            continue
-        label = registry.get(strategy_name).label
-        try:
-            optimizer = ParamGridOptimizer(
-                strategy_name=strategy_name,
-                param_grid=grid,
-                df=df,
-                cash=req.cash,
-                commission=req.commission,
-                slippage=req.slippage,
-                execution=req.execution,
-            )
-        except ValueError:
-            # 单策略网格超限（不应发生，预设已控制规模）→ 跳过
-            continue
-
-        result = optimizer.run()
-        if result.best is None:
-            continue
-
-        # 该策略本轮真实跑的网格点数（笛卡尔积，去掉失败点后的有效点）
-        total_grid += len(result.results)
-
+    for res in raw_results:
+        strategy_name = res["strategy"]
         entry = OptimizeAllRankEntry(
             strategy=strategy_name,
-            strategy_label=label,
-            params=result.best.params,
-            total_return=result.best.total_return,
-            sharpe=result.best.sharpe,
-            max_drawdown=result.best.max_drawdown,
-            total_trades=result.best.total_trades,
-            win_rate=result.best.win_rate,
-            profit_factor=result.best.profit_factor,
-            grid_points=len(result.results),
+            strategy_label=labels[strategy_name],
+            params=res["params"],
+            total_return=res["total_return"],
+            sharpe=res["sharpe"],
+            max_drawdown=res["max_drawdown"],
+            total_trades=res["total_trades"],
+            win_rate=res["win_rate"],
+            profit_factor=res["profit_factor"],
+            grid_points=res["grid_points"],
         )
         ranking.append(entry)
         per_strategy[strategy_name] = entry
+        total_grid += res["grid_points"]
 
     # 按 total_return 降序
     ranking.sort(key=lambda r: r.total_return, reverse=True)

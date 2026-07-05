@@ -38,6 +38,22 @@ const strategy = ref('ma_cross')
 const paramGrid = ref<Record<string, Array<number | string>>>({})
 const cash = ref(1000000)
 const execution = ref<ExecutionMode>('next_open')
+// 一键寻优并发工作进程数：0=串行（同 workers=1）；2+=多进程并行（CPU-bound 必须）
+const cpuCount = (() => {
+  // navigator.hardwareConcurrency 返回逻辑核数（含超线程）；非浏览器/不可用时回退 4
+  const n = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined
+  return n && n > 0 ? n : 4
+})()
+// 推荐档：min(cpu, 8)。默认串行（workers=0），让用户实测后再开并发——
+// 小机器上 Windows spawn 子进程开销可能反而拖慢单个寻优任务。
+const recommendedWorkers = Math.min(cpuCount, 8)
+const workers = ref(0)
+const WORKER_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: '串行（不并发）' },
+  { value: 4, label: '4 进程' },
+  { value: 8, label: '8 进程' },
+  { value: 16, label: '16 进程' },
+]
 // 成交价模式（精简为 开盘价/收盘价）
 const EXECUTIONS: { value: ExecutionMode; label: string }[] = [
   { value: 'next_open', label: '开盘价' },
@@ -109,6 +125,7 @@ async function onRunAll() {
   await store.runOptimizeAll({
     cash: cash.value,
     execution: execution.value,
+    workers: workers.value,
     ohlcv: store.ohlcv,
   })
 }
@@ -205,6 +222,24 @@ const rankingGrades = computed<GradeResult[]>(() =>
             <option v-for="e in EXECUTIONS" :key="e.value" :value="e.value">{{ e.label }}</option>
           </select>
         </div>
+      </section>
+
+      <section class="panel-section">
+        <h3>一键寻优并发</h3>
+        <div class="field">
+          <label
+            >工作进程
+            <span class="hint"
+              >CPU {{ cpuCount }} 核 · 推荐 {{ recommendedWorkers }}</span
+            ></label
+          >
+          <select v-model.number="workers">
+            <option v-for="o in WORKER_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+        </div>
+        <p class="workers-tip">
+          寻优是 CPU 密集计算，多进程可显著提速（仅对「一键寻优所有策略」生效）。机器较弱时建议先用串行测一次再开并发。
+        </p>
       </section>
 
       <button
@@ -371,6 +406,18 @@ const rankingGrades = computed<GradeResult[]>(() =>
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 12px;
+}
+.hint {
+  font-weight: 400;
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  margin-left: 6px;
+}
+.workers-tip {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted, #888);
 }
 .run-btn {
   width: 100%;

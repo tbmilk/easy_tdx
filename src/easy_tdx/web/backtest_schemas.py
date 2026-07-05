@@ -164,6 +164,13 @@ class OptimizeAllBacktestRequest(BaseModel):
     commission: float = Field(default=0.0003, ge=0, le=0.01)
     slippage: float = Field(default=0.0, ge=0, le=0.05)
     execution: Literal["next_open", "next_close"] = Field(default="next_open")
+    workers: int = Field(
+        default=1,
+        ge=0,
+        le=32,
+        description="一键寻优并发工作进程数：0 或 1=串行（默认）；2+=ProcessPoolExecutor "
+        "并行（CPU-bound，线程无加速）。推荐 min(cpu_count, 8)。",
+    )
 
     # 数据来源 A：内联 OHLCV
     ohlcv: list[dict[str, Any]] | None = Field(default=None, max_length=2000)
@@ -275,7 +282,9 @@ class SavedStrategyCreate(BaseModel):
     """
 
     name: str = Field(..., min_length=1, max_length=120, description="策略名称（用户自拟）")
-    kind: Literal["single", "portfolio", "multi"] = Field(..., description="来源：单标的/组合/多策略组合")
+    kind: Literal["single", "portfolio", "multi"] = Field(
+        ..., description="来源：单标的/组合/多策略组合"
+    )
     strategy: str = Field(..., description="策略名（注册表 key，如 ma_cross）")
     strategy_label: str = Field(default="", description="策略展示名")
     params: dict[str, Any] = Field(default_factory=dict)

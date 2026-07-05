@@ -229,6 +229,7 @@ export interface OptimizeAllBacktestRequest {
   commission?: number
   slippage?: number
   execution?: ExecutionMode
+  workers?: number
   ohlcv?: Bar[]
   symbol?: string
   category?: Category
