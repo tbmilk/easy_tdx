@@ -16,7 +16,13 @@ from .._df import _apply_bar_time_align_df, _period_to_minutes, _to_df
 from .._reconnect import _RETRY_DELAYS, AsyncHeartbeatMixin
 from ..codec.bitmap import Fields, PresetField
 from ..commands.base import BaseCommand
-from ..config import get_best_host, get_mac_hosts, get_port, get_timeout, save_best_host
+from ..config import (
+    get_best_mac_host,
+    get_mac_hosts,
+    get_port,
+    get_timeout,
+    save_best_mac_host,
+)
 from ..exceptions import TdxConnectionError
 from ..transport.async_ import AsyncTdxConnection
 from ..transport.sync import TdxConnection, ping_mac_all
@@ -147,7 +153,7 @@ class MacClient:
         auto_reconnect: bool = True,
         heartbeat_interval: float = 15.0,
     ) -> None:
-        self._host = host if host is not None else get_best_host()
+        self._host = host if host is not None else get_best_mac_host()
         self._port = port if port is not None else get_port()
         self._timeout = timeout if timeout is not None else get_timeout()
         self._auto_reconnect = auto_reconnect
@@ -180,7 +186,7 @@ class MacClient:
             timeout = get_timeout()
         ranked = ping_mac_all(hosts, port, ping_timeout)
         best = ranked[0][0] if ranked else hosts[0]
-        save_best_host(best)
+        save_best_mac_host(best)
         return cls(best, port, timeout, auto_reconnect, heartbeat_interval)
 
     @staticmethod
@@ -1156,7 +1162,7 @@ class AsyncMacClient(AsyncHeartbeatMixin):
         auto_reconnect: bool = True,
         heartbeat_interval: float = 15.0,
     ) -> None:
-        self._host = host if host is not None else get_best_host()
+        self._host = host if host is not None else get_best_mac_host()
         self._port = port if port is not None else get_port()
         self._timeout = timeout if timeout is not None else get_timeout()
         self._auto_reconnect = auto_reconnect
@@ -1191,7 +1197,7 @@ class AsyncMacClient(AsyncHeartbeatMixin):
             timeout = get_timeout()
         ranked = ping_mac_all(hosts, port, ping_timeout)
         best = ranked[0][0] if ranked else hosts[0]
-        save_best_host(best)
+        save_best_mac_host(best)
         return cls(best, port, timeout, auto_reconnect, heartbeat_interval)
 
     @staticmethod

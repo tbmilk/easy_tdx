@@ -2,6 +2,16 @@
 
 本文件记录 easy-tdx 的版本变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.19.4] — 2026-07-07
+
+**修复取不到行情数据的根因：MAC 客户端污染标准协议的 best_host** —— v1.19.3 在实际机器上"所有股票都取不到数据"（K 线响应偏移 2 剩余 0）。根因是 `mac/client.py` 的 `MacClient.from_best_host()` 和 `AsyncMacClient.from_best_host()` 调用了 `save_best_host(best)`——把选中的 **MAC 协议服务器**（如 `121.36.248.138`）写进了全局 `best_host` 字段，但这个字段是**标准 TDX 协议**用的。之后标准 `AsyncTdxClient` 用 `get_best_host()` 读到这个 MAC host，用标准协议请求 MAC 服务器，返回空 body。web app 启动时 lifespan 会启动 MAC 客户端，这就是污染时机。
+
+### 修复
+
+- **MAC host 不再污染标准 best_host**（`src/easy_tdx/config.py` + `src/easy_tdx/mac/client.py`）—— 新增独立的 `best_mac_host` 字段 + `get_best_mac_host()` / `save_best_mac_host()`。`MacClient` / `AsyncMacClient` 的 `from_best_host()` 和 `__init__` 改用新字段（4 处），不再调 `save_best_host` / `get_best_host`。
+- **best_host 交叉污染校验**（`src/easy_tdx/config.py:get_best_host`）—— 读取时检测缓存 host 是否在标准 host 候选列表（known_hosts + 源码默认）里，不在则自动重置为默认首个并持久化。**这会自动修复已被污染的 config.json**，用户无需手动删配置。
+- **回归测试**（`tests/unit/test_config.py`）—— 新增 `TestBestHostPollutionGuard`（3 个测试：MAC host 被重置 / 合法 host 不重置 / 重置持久化）+ `TestMacHostSeparation`（2 个测试：save_best_mac_host 不碰 best_host / get_best_mac_host 返回独立字段）。更新既有 `test_config_json_host`（host 需在 known_hosts 里才通过校验）。
+
 ## [1.19.3] — 2026-07-07
 
 **修复 EXE 运行时两个问题：K 线空 body 仍 500 + 前端路由刷新 404** —— v1.19.2 在实际机器上运行日志暴露两个问题：(1) SH600519 等正常股票偶发请求 K 线时，通达信服务器返回 `ret_count>0` 但 body 完全为空（pos=2 剩余 0 字节），v1.18.3 的容错有 `if bars:` 条件——bars 为空时走 `raise` → 500，老人看到"取行情失败"。(2) 用户在 `/optimize`、`/portfolio` 等前端路由页面刷新时，后端 StaticFiles 找不到文件返回 404（SPA fallback 缺失）。
