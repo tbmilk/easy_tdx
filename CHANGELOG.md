@@ -2,6 +2,15 @@
 
 本文件记录 easy-tdx 的版本变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.19.2] — 2026-07-07
+
+**修复干净 Windows 上 EXE 双击后页面纯黑** —— v1.19.1 在没装开发工具的 Windows（如老人电脑）上双击 EXE，浏览器打开 `localhost:8000` 后页面纯黑、`/docs` 却能正常打开。根因：干净 Windows 的注册表里没有 `.js` 文件的 `Content Type` 映射，Python 的 `mimetypes.guess_type('.js')` 返回 `None`，FastAPI/Starlette 的 `StaticFiles` 回退到 `text/plain`。但 `index.html` 里的 `<script type="module">` 启用严格 MIME 检查，浏览器拒绝执行 `text/plain` 的 JS（报错 `Expected a JavaScript-or-Wasm module script but the server responded with a MIME type of "text/plain"`），Vue 根本不挂载 → 纯黑。修复：在 mount 前用 `mimetypes.add_type` 强制注册 `.js/.mjs/.css/.svg` 的正确 MIME，无论机器装没装开发工具都生效。
+
+### 修复
+
+- **EXE 页面纯黑（MIME 类型）**（`src/easy_tdx/web/app.py`）—— mount StaticFiles 前强制 `mimetypes.add_type("application/javascript", ".js")` 等 4 项。在干净 Windows（用户名 INTEL、无开发环境）实测复现并修复：JS/CSS 现在返回正确的 `Content-Type`，浏览器不再拒绝执行 module script。
+- **spec 前端文件打包**（`easy_tdx.spec`）—— v1.19.1 的 `datas += [("web-ui/dist", "web_dist")]` 实际能工作（PyInstaller 把目录路径当 glob 处理），但为可靠性改为用 `pathlib.rglob` 逐文件展开成 `(src_file, dest_dir)` 元组列表，并加 dist 不存在时的 WARNING 提示。
+
 ## [1.19.1] — 2026-07-07
 
 **支持打包成单一 Windows EXE + GitHub Actions 自动发版** —— 面向"一点都不懂的老年"用户群，让 easy-tdx 能从"开发者双进程"形态变成"双击 EXE → 浏览器自动打开 → 看到回测界面"的零门槛形态。本版为 Phase 1（未签名自测版）；Phase 2 引入代码签名消除 SmartScreen 提示，Phase 3 加 macOS。

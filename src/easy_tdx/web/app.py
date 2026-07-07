@@ -232,6 +232,18 @@ def _create_app(
     # --- 前端 dist 托管（生产/打包态同源服务，开发态可缺省） ---
     # 必须在所有 API 路由注册之后：StaticFiles(html=True) 挂在 "/" 会吞掉
     # 未匹配路径，放最后保证 /api/v1/* 优先命中路由表。
+    # 强制注册 MIME 类型：干净 Windows（无开发环境）的注册表里可能没有
+    # .js/.mjs/.css 的 Content Type，导致 mimetypes.guess_type 返回 None，
+    # StaticFiles 回退到 text/plain。浏览器的 <script type="module"> 启用
+    # 严格 MIME 检查，拒绝执行 text/plain 的 JS → 页面纯黑（v1.19.1 bug）。
+    # add_type 会覆盖/补充注册表缺失的映射，无论机器装没装开发工具都生效。
+    import mimetypes
+
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("application/javascript", ".mjs")
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("image/svg+xml", ".svg")
+
     from fastapi.staticfiles import StaticFiles
 
     dist_dir = _resolve_web_dist_dir()

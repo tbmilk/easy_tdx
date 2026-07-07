@@ -36,8 +36,27 @@ datas: list[tuple[str, str]] = []
 datas += collect_data_files("tzdata")
 # Pillow 的图像格式插件（PngImagePlugin 等）随数据文件一起收集
 datas += collect_data_files("PIL")
-# 前端 dist 打包到运行时 sys._MEIPASS/web_dist
-datas += [("web-ui/dist", "web_dist")]
+
+# 前端 dist 整目录收集到运行时 sys._MEIPASS/web_dist。
+# 关键坑（v1.19.1 的 bug）：PyInstaller 的 datas=[(src, dst)] 里 src 必须是
+# **文件路径**而非目录——写成 ('web-ui/dist', 'web_dist') 会被当成不存在的
+# 文件静默跳过（EXE 内 0 个前端文件 → 页面纯黑）。正确做法是用 glob 展开
+# dist 下每个文件为独立的 (src_file, dest_dir) tuple。spec 在仓库根执行，
+# 所以相对路径基于仓库根。
+from pathlib import Path
+
+_dist_root = Path("web-ui/dist")
+if _dist_root.is_dir():
+    for f in _dist_root.rglob("*"):
+        if f.is_file():
+            # 目标目录：保留 dist 内的相对结构（如 assets/），
+            # 整体放到 web_dist/ 下。例如 web-ui/dist/assets/x.js
+            # → web_dist/assets/，文件名 x.js 由 PyInstaller 自动拼。
+            rel_parent = f.parent.relative_to(_dist_root)
+            dest_dir = f"web_dist/{rel_parent.as_posix()}" if str(rel_parent) != "." else "web_dist"
+            datas.append((str(f), dest_dir))
+else:
+    print("WARNING: web-ui/dist 不存在，EXE 将无前端界面！请先 npm run build")
 
 block_cipher = None
 
