@@ -14,6 +14,9 @@ import type {
   SavedStrategy,
   SavedStrategyCreate,
   SavedStrategyListResponse,
+  ServerHostInfo,
+  ServerHostListResponse,
+  ServerSwitchResult,
   StrategiesResponse,
   TaskListResponse,
   TaskState,
@@ -263,4 +266,35 @@ export async function saveStrategy(req: SavedStrategyCreate): Promise<SavedStrat
 export async function deleteSavedStrategy(id: string): Promise<void> {
   const resp = await fetch(`${BASE}/strategies/${id}`, { method: 'DELETE' })
   if (!resp.ok) await throwError(resp)
+}
+
+// ── 服务器设置 ──────────────────────────────────────────────────────────────
+
+/** 列出所有候选通达信服务器 + 当前使用的 host（不含延迟，需点测速）。 */
+export async function fetchServerHosts(): Promise<ServerHostListResponse> {
+  const resp = await fetch(`${BASE}/server/hosts`)
+  if (!resp.ok) await throwError(resp)
+  return (await resp.json()) as ServerHostListResponse
+}
+
+/** 并发测速全部（或指定）host，返回延迟和可达性。 */
+export async function testServerHosts(hosts?: string[]): Promise<ServerHostInfo[]> {
+  const resp = await fetch(`${BASE}/server/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hosts: hosts ?? null }),
+  })
+  if (!resp.ok) await throwError(resp)
+  return (await resp.json()) as ServerHostInfo[]
+}
+
+/** 切换到指定 host（热重连，无需重启服务）。 */
+export async function switchServerHost(host: string): Promise<ServerSwitchResult> {
+  const resp = await fetch(`${BASE}/server/switch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host }),
+  })
+  if (!resp.ok) await throwError(resp)
+  return (await resp.json()) as ServerSwitchResult
 }

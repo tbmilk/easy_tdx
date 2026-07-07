@@ -330,3 +330,28 @@ export interface MultiStrategyBacktestRequest {
   slippage?: number
   execution?: ExecutionMode
 }
+
+// ── 服务器设置（GET /api/v1/server/hosts 等） ────────────────────────────────
+
+/** 单个通达信服务器的状态信息。 */
+export interface ServerHostInfo {
+  host: string
+  /** 延迟（毫秒）。null = 未测速或不可达。 */
+  latency_ms: number | null
+  reachable: boolean
+  is_current: boolean
+}
+
+/** GET /server/hosts 的响应。 */
+export interface ServerHostListResponse {
+  hosts: ServerHostInfo[]
+  current_host: string
+  total: number
+}
+
+/** POST /server/switch 的响应。 */
+export interface ServerSwitchResult {
+  ok: boolean
+  host: string
+  message: string
+}

@@ -2,6 +2,26 @@
 
 本文件记录 easy-tdx 的版本变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [1.19.7] — 2026-07-07
+
+**新增「服务器设置」页面：web UI 上测速 + 切换通达信服务器** —— 解决"有些用户获取到的 IP 能连通、有些不能"的问题。不同地区/运营商对通达信各服务器连通性不同，之前用户只能碰运气或手动改 config.json。现在在 web UI 上新增第六个页面「服务器设置」，列出全部 50+ 候选服务器、一键并发测速、点选切换——切换后立即生效（热重连），无需重启服务。
+
+### 新增
+
+- **`AsyncTdxClient.reconnect_to(host)`**（`src/easy_tdx/client.py`）—— 热切换 host 的核心方法：复用 `_execute_lock` 保证切换期间无并发请求撞半开连接，关旧连接→换 host→建新连接→重启心跳。切换失败抛异常（client 断开，路由层捕获返回友好提示）。
+- **服务器设置路由**（`src/easy_tdx/web/routers/server.py`）—— 3 个端点：
+  - `GET /api/v1/server/hosts`：列出候选 host + 当前 host（不测速，首屏秒开）
+  - `POST /api/v1/server/test`：并发 ping 测速，返回延迟（ms）和可达性，按延迟排序
+  - `POST /api/v1/server/switch`：切换到指定 host（先 reconnect 成功再 save_best_host，避免连接失败污染 config）
+- **服务器设置页面**（`web-ui/src/views/ServerSettingsView.vue`）—— 左侧当前 host + 测速按钮，右侧 host 列表表格（IP/延迟颜色编码/状态徽章/使用按钮）。延迟 <100ms 绿色、<300ms 蓝色、≥300ms 红色、不可达灰色。
+- **导航入口**：顶部导航栏新增「服务器设置」（第 6 个页面）。
+
+### 设计决策
+
+- **不自动测速**：页面加载只列 host，点按钮才测速（50+ host 全 ping 要几秒，自动测速会卡首屏）。
+- **切换顺序**：先 `reconnect_to` 成功 → 再 `save_best_host` 持久化（v1.19.4 host 污染 bug 的教训）。
+- **host 校验**：只允许切换到候选列表里的 IP，防止任意地址注入。
+
 ## [1.19.6] — 2026-07-07
 
 **修复 EXE 丢失所有第三方依赖（pandas/numpy/uvicorn 等）** —— v1.19.5 的 EXE 只有 11MB（正常 44MB），双击报 `ModuleNotFoundError: No module named 'pandas'`。根因：`release.yml` 的步骤顺序是先 `pip install -e ".[web,packaging]"` 再 `Build frontend`，但 `pyproject.toml` 的 `force-include` 要求 `web-ui/dist` 在 `pip install` 时就存在——install 阶段 dist 不存在导致 editable install 静默降级，PyInstaller 收集不到第三方包。修复：调换 `release.yml` 步骤顺序，先 `npm run build` 再 `pip install`。
