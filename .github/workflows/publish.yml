@@ -40,6 +40,7 @@ jobs:
 
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # 启用 PyPI 签名认证（sigstore provenance），让用户可验证产物来源。
-          # id-token: write 已在上方 permissions 配置，OIDC trusted publishing 直连。
-          attestations: true
+          # sigstore provenance 签名认证。OIDC 服务（GitHub Actions → sigstore）
+          # 偶发 503 overflow 故障时会让整个 publish 失败，故暂时关闭；
+          # 待服务稳定后再改回 true。上传本身用 OIDC trusted publishing，无需 API token。
+          attestations: false
