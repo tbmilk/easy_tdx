@@ -15,6 +15,7 @@ from typing import Any, TypeVar
 import pandas as pd
 
 from .._df import _to_df
+from .._health import record_failure, record_success
 from .._reconnect import (
     _RETRY_DELAYS,
     AsyncHeartbeatMixin,
@@ -159,12 +160,15 @@ class MacExClient:
         ``TdxConnectionError`` 与业务请求一样计入退避重试；``TdxCommandError``
         （登录被拒等确定性失败）不重试，直接抛出。跨主机故障转移阶段同样遵循
         ``connect + login`` 纳入重试的语义。
+
+        健康分联动与 A 股 client 一致（成功记 success、连接失败记 failure）。
         """
         try:
-            return self._conn.execute(cmd)
+            result = self._conn.execute(cmd)
         except TdxConnectionError:
             if not self._auto_reconnect:
                 raise
+            record_failure(self._host)
             last_exc: TdxConnectionError | None = None
             for delay in _RETRY_DELAYS:
                 time.sleep(delay)
@@ -176,9 +180,12 @@ class MacExClient:
                 try:
                     self._conn.connect()
                     self._login()
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             # 第二阶段：跨主机故障转移——测速切到另一台 MAC 扩展行情服务器
             new_host = select_best_host_sync(
                 get_mac_ex_hosts(),
@@ -197,10 +204,16 @@ class MacExClient:
                 try:
                     self._conn.connect()
                     self._login()
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             raise last_exc  # type: ignore[misc]
+        else:
+            record_success(self._host)
+            return result
 
     # ------------------------------------------------------------------ #
     # 商品列表
@@ -617,13 +630,16 @@ class AsyncMacExClient(AsyncHeartbeatMixin):
         每次重连后必须重新 ``_login()``（MAC 协议扩展行情特有）。登录握手期的
         ``TdxConnectionError`` 与业务请求一样计入退避重试；``TdxCommandError``
         （登录被拒等确定性失败）不重试，直接抛出。
+
+        健康分联动与 sync 版对称。
         """
         async with self._execute_lock:
             try:
-                return await self._conn.execute(cmd)
+                result = await self._conn.execute(cmd)
             except TdxConnectionError:
                 if not self._auto_reconnect:
                     raise
+                record_failure(self._host)
                 last_exc: TdxConnectionError | None = None
                 for delay in _RETRY_DELAYS:
                     await asyncio.sleep(delay)
@@ -635,9 +651,12 @@ class AsyncMacExClient(AsyncHeartbeatMixin):
                     try:
                         await self._conn.connect()
                         await self._login()
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 # 第二阶段：跨主机故障转移
                 new_host = await select_best_host_async(
                     get_mac_ex_hosts(),
@@ -656,10 +675,16 @@ class AsyncMacExClient(AsyncHeartbeatMixin):
                     try:
                         await self._conn.connect()
                         await self._login()
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 raise last_exc  # type: ignore[misc]
+            else:
+                record_success(self._host)
+                return result
 
     # ------------------------------------------------------------------ #
     # 商品列表

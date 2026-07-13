@@ -191,3 +191,128 @@ class TestMacExLoginRetriedOnConnectionError:
                     client._execute(GetExMarketsCmd())
             # 关键：_login 异常被纳入重试，4 次都跑了（而非第 1 次就逃逸）
             assert mock_sleep.call_count == len(_RETRY_DELAYS)
+
+
+# --------------------------------------------------------------------------- #
+# MAC/EX client 健康分联动（防 pattern-fix 回归）
+# --------------------------------------------------------------------------- #
+
+
+class TestExClientHealthTracking:
+    """锁定修复：MAC/EX 的 _execute 必须像 A 股 client 一样写健康分。
+
+    此前只有 A 股 TdxClient/AsyncTdxClient 注入了 record_failure/record_success，
+    MAC/EX 的 6 个 _execute 漏改（它们的服务器 IP 与 A 股不重叠，失败时不会被
+    降权，功能残缺）。本测试防止再次漏改。
+    """
+
+    def test_ex_client_failure_records_health(self) -> None:
+        """ExTdxClient 连接失败时应调 record_failure 降权当前 host。"""
+        from easy_tdx._health import reset_health
+
+        reset_health()
+        try:
+            with (
+                patch("easy_tdx.ex.client.ExTdxConnection") as mock_conn_cls,
+                patch("easy_tdx.ex.client.time.sleep"),
+                patch("easy_tdx.ex.client.select_best_host_sync", return_value=None),
+            ):
+                mock_conn = MagicMock()
+                mock_conn.execute.side_effect = TdxConnectionError("down")
+                mock_conn_cls.return_value = mock_conn
+
+                client = ExTdxClient("ex-bad", auto_reconnect=True)
+                with pytest.raises(TdxConnectionError):
+                    client._execute(GetExMarketsCmd())
+
+            from easy_tdx._health import get_score
+
+            # ex-bad 经历首次 + 4 次重试共 5 次失败，score 应远低于 1.0
+            assert get_score("ex-bad") < 1.0
+        finally:
+            reset_health()
+
+    def test_ex_client_success_records_health(self) -> None:
+        """ExTdxClient 首次成功应调 record_success（score 保持 1.0）。"""
+        from easy_tdx._health import get_score, reset_health
+
+        reset_health()
+        try:
+            with patch("easy_tdx.ex.client.ExTdxConnection") as mock_conn_cls:
+                mock_conn = MagicMock()
+                mock_conn.execute.return_value = ["market"]
+                mock_conn_cls.return_value = mock_conn
+
+                client = ExTdxClient("ex-good", auto_reconnect=True)
+                result = client._execute(GetExMarketsCmd())
+                assert result == ["market"]
+            assert get_score("ex-good") == 1.0
+        finally:
+            reset_health()
+
+    def test_mac_ex_client_failure_records_health(self) -> None:
+        """MacExClient（含 _login 重连路径）连接失败也应降权当前 host。"""
+        from easy_tdx._health import reset_health
+
+        reset_health()
+        try:
+            with (
+                patch("easy_tdx.ex.mac_client.ExTdxConnection") as mock_conn_cls,
+                patch("easy_tdx.ex.mac_client.time.sleep"),
+                patch("easy_tdx.ex.mac_client.select_best_host_sync", return_value=None),
+            ):
+                mock_conn = MagicMock()
+                mock_conn.execute.side_effect = TdxConnectionError("down")
+                mock_conn_cls.return_value = mock_conn
+
+                client = MacExClient("macex-bad", auto_reconnect=True)
+                with pytest.raises(TdxConnectionError):
+                    client._execute(GetExMarketsCmd())
+
+            from easy_tdx._health import get_score
+
+            assert get_score("macex-bad") < 1.0
+        finally:
+            reset_health()
+
+    def test_async_ex_client_failure_records_health(self) -> None:
+        """AsyncExTdxClient 连接失败时也应降权。"""
+        from easy_tdx._health import reset_health
+
+        reset_health()
+        try:
+
+            async def main() -> None:
+                with patch("easy_tdx.ex.client.AsyncExTdxConnection") as mock_conn_cls:
+                    mock_conn = MagicMock()
+
+                    async def _execute(cmd: object) -> list[str]:
+                        raise TdxConnectionError("down")
+
+                    async def _noop() -> None:
+                        return None
+
+                    mock_conn.execute = _execute
+                    mock_conn.close = _noop
+                    mock_conn.connect = _noop
+                    mock_conn_cls.return_value = mock_conn
+
+                    client = AsyncExTdxClient("aex-bad", auto_reconnect=True, heartbeat_interval=0)
+                    with (
+                        patch("easy_tdx.ex.client.asyncio.sleep"),
+                        patch(
+                            "easy_tdx.ex.client.select_best_host_async",
+                            new_callable=AsyncMock,
+                            return_value=None,
+                        ),
+                    ):
+                        with pytest.raises(TdxConnectionError):
+                            await client._execute(GetExMarketsCmd())
+
+            asyncio.run(main())
+
+            from easy_tdx._health import get_score
+
+            assert get_score("aex-bad") < 1.0
+        finally:
+            reset_health()

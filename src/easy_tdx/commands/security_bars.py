@@ -87,13 +87,24 @@ class GetSecurityBarsCmd(BaseCommand[list[SecurityBar]]):
                 # 注意：即使 bars 为空（第 1 条就崩）也 return 而非 raise ——
                 # 服务器返回 0 条数据但 ret_count 撒谎是已知现象，返回空列表
                 # 让调用方分页重试比直接 500 更友好。
-                _log.warning(
-                    "K线响应在第 %d/%d 条处被截断（%s），已丢弃末尾残缺记录，返回前 %d 条",
-                    i + 1,
-                    ret_count,
-                    e,
-                    len(bars),
-                )
+                if i == 0 and not bars:
+                    # 第 1 条即崩且无任何已解析记录：典型"服务器空响应"
+                    # （ret_count 撒谎）。用更明确的措辞，便于上层故障转移逻辑
+                    # 与人工排查识别"这是该服务器没数据，该换台"。
+                    _log.warning(
+                        "K线响应为空（声称 %d 条但首条即解析失败：%s），"
+                        "该服务器可能未提供此标的，返回空列表",
+                        ret_count,
+                        e,
+                    )
+                else:
+                    _log.warning(
+                        "K线响应在第 %d/%d 条处被截断（%s），已丢弃末尾残缺记录，返回前 %d 条",
+                        i + 1,
+                        ret_count,
+                        e,
+                        len(bars),
+                    )
                 return bars
 
             # 差分还原（与 pytdx 完全一致）
@@ -153,13 +164,21 @@ class GetIndexBarsCmd(GetSecurityBarsCmd):
                 # 指数记录额外 4 字节：上涨家数 + 下跌家数（各 uint16 LE）
                 pos += 4
             except TdxDecodeError as e:
-                _log.warning(
-                    "指数K线响应在第 %d/%d 条处被截断（%s），已丢弃末尾残缺记录，返回前 %d 条",
-                    i + 1,
-                    ret_count,
-                    e,
-                    len(bars),
-                )
+                if i == 0 and not bars:
+                    _log.warning(
+                        "指数K线响应为空（声称 %d 条但首条即解析失败：%s），"
+                        "该服务器可能未提供此指数，返回空列表",
+                        ret_count,
+                        e,
+                    )
+                else:
+                    _log.warning(
+                        "指数K线响应在第 %d/%d 条处被截断（%s），已丢弃末尾残缺记录，返回前 %d 条",
+                        i + 1,
+                        ret_count,
+                        e,
+                        len(bars),
+                    )
                 return bars
 
             # 差分还原（与 pytdx 完全一致）

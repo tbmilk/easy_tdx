@@ -24,6 +24,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
+from ._health import rank_by_health, record_failure, record_success
 from .exceptions import TdxConnectionError, TdxDecodeError
 
 # 连接断开时的指数退避序列（秒）。每次重连失败后按此序列 sleep 再重试，
@@ -116,6 +117,9 @@ def select_best_host_sync(
         # 无论测速是否拿到结果，都视为"完成一次测速"，开启节流窗口，
         # 避免失败时被高频重试反复触发。
         _mark_failover_done()
+    # 健康分重排：冷却中的剔除，剩余按 latency/score（有效延迟）排序。
+    # 全健康时近似恒等映射，对既有 mock 测试零影响。
+    ranked = rank_by_health(ranked)
     # 跳过当前（已判定不可用）主机，取延迟最低的另一台
     for host, _latency in ranked:
         if host != current_host:
@@ -149,6 +153,8 @@ async def select_best_host_async(
         ranked = await asyncio.to_thread(ping_fn, hosts, port, ping_timeout)
     finally:
         _mark_failover_done()
+    # 健康分重排（与 sync 版对称）：冷却剔除 + 有效延迟排序。
+    ranked = rank_by_health(ranked)
     for host, _latency in ranked:
         if host != current_host:
             save_fn(host)
@@ -195,6 +201,8 @@ def find_working_host_sync(
     """
     log = logging.getLogger(__name__)
     tried = 0
+    # 健康分预过滤：剔除冷却中的主机，避免对"持续不可用"的服务器反复实测。
+    ranked_hosts = rank_by_health(ranked_hosts)
     for host, _latency in ranked_hosts:
         if host == current_host:
             continue
@@ -204,6 +212,7 @@ def find_working_host_sync(
         try:
             if try_fn(host):
                 save_fn(host)
+                record_success(host)
                 log.info(
                     "空数据故障转移：从 %s 切换到 %s（第 %d 台候选可用）",
                     current_host,
@@ -211,9 +220,12 @@ def find_working_host_sync(
                     tried,
                 )
                 return host
+            # 连通但返回空数据：记一次失败降权，下次优先级下降
+            record_failure(host)
         except Exception:
             # 验证单台主机时的任何异常（连接失败、解析错误等）都只跳过该台，
             # 继续尝试下一台，不让单台拖垮整个轮询。
+            record_failure(host)
             log.debug("空数据故障转移：%s 验证失败，尝试下一台", host, exc_info=True)
     return None
 
@@ -231,6 +243,8 @@ async def find_working_host_async(
     """
     log = logging.getLogger(__name__)
     tried = 0
+    # 健康分预过滤（与 sync 版对称）：剔除冷却中的主机。
+    ranked_hosts = rank_by_health(ranked_hosts)
     for host, _latency in ranked_hosts:
         if host == current_host:
             continue
@@ -240,6 +254,7 @@ async def find_working_host_async(
         try:
             if await try_fn(host):
                 save_fn(host)
+                record_success(host)
                 log.info(
                     "空数据故障转移：从 %s 切换到 %s（第 %d 台候选可用）",
                     current_host,
@@ -247,7 +262,10 @@ async def find_working_host_async(
                     tried,
                 )
                 return host
+            # 连通但返回空数据：记一次失败降权
+            record_failure(host)
         except Exception:
+            record_failure(host)
             log.debug("空数据故障转移：%s 验证失败，尝试下一台", host, exc_info=True)
     return None
 

@@ -9,6 +9,7 @@ from types import TracebackType
 from typing import TypeVar
 
 from .._df import _apply_bar_time_align_bars, _category_to_minutes
+from .._health import record_failure, record_success
 from .._reconnect import (
     _RETRY_DELAYS,
     AsyncHeartbeatMixin,
@@ -143,20 +144,26 @@ class ExTdxClient:
 
         两阶段韧性与 A 股/MAC 统一（审计 #2）：先同主机重试 4 次，再跨主机
         故障转移（测速切到另一台扩展行情服务器）。
+
+        健康分联动与 A 股 client 一致（成功记 success、连接失败记 failure）。
         """
         try:
-            return self._conn.execute(cmd)
+            result = self._conn.execute(cmd)
         except TdxConnectionError:
             if not self._auto_reconnect:
                 raise
+            record_failure(self._host)
             last_exc: TdxConnectionError | None = None
             for delay in _RETRY_DELAYS:
                 time.sleep(delay)
                 self._reconnect()
                 try:
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             # 第二阶段：跨主机故障转移
             new_host = select_best_host_sync(
                 get_ex_hosts(),
@@ -169,10 +176,16 @@ class ExTdxClient:
             if new_host is not None:
                 self._reconnect(new_host)
                 try:
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             raise last_exc  # type: ignore[misc]
+        else:
+            record_success(self._host)
+            return result
 
     # ------------------------------------------------------------------ #
     # 市场信息
@@ -400,21 +413,28 @@ class AsyncExTdxClient(AsyncHeartbeatMixin):
         self._start_heartbeat()
 
     async def _execute(self, cmd: "BaseCommand[_T]") -> _T:
-        """执行命令；断线时指数退避重试，同主机耗尽则跨主机故障转移。"""
+        """执行命令；断线时指数退避重试，同主机耗尽则跨主机故障转移。
+
+        健康分联动与 sync 版对称。
+        """
         async with self._execute_lock:
             try:
-                return await self._conn.execute(cmd)
+                result = await self._conn.execute(cmd)
             except TdxConnectionError:
                 if not self._auto_reconnect:
                     raise
+                record_failure(self._host)
                 last_exc: TdxConnectionError | None = None
                 for delay in _RETRY_DELAYS:
                     await asyncio.sleep(delay)
                     await self._areconnect()
                     try:
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 # 第二阶段：跨主机故障转移
                 new_host = await select_best_host_async(
                     get_ex_hosts(),
@@ -427,10 +447,16 @@ class AsyncExTdxClient(AsyncHeartbeatMixin):
                 if new_host is not None:
                     await self._areconnect(new_host)
                     try:
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 raise last_exc  # type: ignore[misc]
+            else:
+                record_success(self._host)
+                return result
 
     # ------------------------------------------------------------------ #
     # 市场信息

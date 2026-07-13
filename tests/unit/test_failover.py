@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from easy_tdx._health import _FAILURE_DECAY, reset_health
 from easy_tdx._reconnect import (
     _FAILOVER_PING_THROTTLE_SEC,
     _WORKING_HOST_MAX_ATTEMPTS,
@@ -26,6 +27,23 @@ from easy_tdx.commands.security_count import GetSecurityCountCmd
 from easy_tdx.exceptions import TdxConnectionError
 from easy_tdx.models.bar import SecurityBar
 from easy_tdx.models.enums import KlineCategory, Market
+
+
+@pytest.fixture(autouse=True)
+def _isolate_health_and_throttle():
+    """每个测试前后重置健康分 + 节流时间戳，避免跨测试污染。
+
+    failover 与空数据转移现在会写健康分（record_failure/success），
+    若不重置，一个测试里降权的 host 会影响后续测试的 rank_by_health 排序。
+    """
+    import easy_tdx._reconnect as r
+
+    r._last_failover_ts = 0.0
+    reset_health()
+    yield
+    reset_health()
+    r._last_failover_ts = 0.0
+
 
 # --------------------------------------------------------------------------- #
 # select_best_host_sync 单元逻辑
@@ -400,18 +418,71 @@ class TestMarketStatEmptyFailover:
 
 
 # --------------------------------------------------------------------------- #
-# get_index_bars / get_security_bars 空数据故障转移
-# （与 TestMarketStatEmptyFailover 对称：指数/板块指数 880xxx 并非所有服务器都提供）
+# 健康分联动：select_best_host / find_working_host 感知健康分
 # --------------------------------------------------------------------------- #
 
 
-class TestIndexBarsEmptyFailover:
+class TestHealthAwareFailover:
+    """验证故障转移会读取/写入健康分：坏主机被降权后排序靠后。"""
+
+    def test_select_best_host_skips_cooldown_host(self) -> None:
+        """冷却中的主机即使延迟最低，也不会被 select_best_host 选中。"""
+        from easy_tdx._health import record_failure
+
+        # host-fast 连续失败进入冷却
+        for _ in range(3):
+            record_failure("host-fast")
+
+        ping_fn = MagicMock(return_value=[("host-fast", 0.01), ("host-slow", 0.10)])
+        save_fn = MagicMock()
+        result = select_best_host_sync(
+            ["host-fast", "host-slow", "cur"], ping_fn, save_fn, 7709, 1.0, "cur"
+        )
+        # host-fast 在冷却中被剔除，应选 host-slow
+        assert result == "host-slow"
+        save_fn.assert_called_once_with("host-slow")
+
+    def test_find_working_host_records_failure_on_empty(self) -> None:
+        """候选返回空数据时记一次 failure（降权），下次轮询优先级下降。"""
+        from easy_tdx._health import get_score
+
+        ranked = [("empty-host", 0.01), ("good-host", 0.02)]
+        try_fn = MagicMock(side_effect=[False, True])  # empty 空，good 非空
+        save_fn = MagicMock()
+
+        result = find_working_host_sync(ranked, try_fn, save_fn, "cur")
+        assert result == "good-host"
+        # empty-host 被记一次失败，score < 1.0
+        assert get_score("empty-host") < 1.0
+        # good-host 被记成功，score = 1.0
+        assert get_score("good-host") == 1.0
+
+    def test_find_working_host_records_success_on_hit(self) -> None:
+        """命中的主机 score 恢复到 1.0。"""
+        from easy_tdx._health import get_score, record_failure
+
+        # 先把 good-host 降权
+        record_failure("good-host")
+        assert get_score("good-host") < 1.0
+
+        ranked = [("good-host", 0.01)]
+        try_fn = MagicMock(return_value=True)
+        save_fn = MagicMock()
+
+        find_working_host_sync(ranked, try_fn, save_fn, "cur")
+        # 命中后 score 恢复（+0.2，但初始降权后 0.5+0.2=0.7，未到 1.0；
+        # 关键是比失败前上升了）
+        assert get_score("good-host") > _FAILURE_DECAY
+
+
+# --------------------------------------------------------------------------- #
+# get_index_bars / get_security_bars 空数据故障转移
+# （指数/板块指数 880xxx 并非所有服务器都提供，空时逐台实测切 host）
+# --------------------------------------------------------------------------- #
+
+
+class TestBarsEmptyFailover:
     """K 线空数据故障转移——验证 get_index_bars/get_security_bars 空时逐台实测切 host。"""
-
-    def setup_method(self) -> None:
-        import easy_tdx._reconnect as r
-
-        r._last_failover_ts = 0.0
 
     def _make_bar(self) -> SecurityBar:
         """构造一根字段合法的日 K，让 get_index_bars 下游处理走通。"""
@@ -478,7 +549,7 @@ class TestIndexBarsEmptyFailover:
 
         with (
             patch.object(client, "_execute", return_value=[bar]) as mock_exec,
-            patch.object(client, "_find_host_returning_bars") as mock_failover,
+            patch.object(client, "_find_host_returning_data") as mock_failover,
         ):
             df = client.get_index_bars(Market.SH, "880008", KlineCategory.DAY, 0, 10)
 
@@ -492,7 +563,7 @@ class TestIndexBarsEmptyFailover:
 
         with (
             patch.object(client, "_execute", return_value=[]) as mock_exec,
-            patch.object(client, "_find_host_returning_bars") as mock_failover,
+            patch.object(client, "_find_host_returning_data") as mock_failover,
         ):
             df = client.get_index_bars(Market.SH, "880008", KlineCategory.DAY, 0, 10)
 

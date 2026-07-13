@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 import pandas as pd
 
 from .._df import _apply_bar_time_align_df, _period_to_minutes, _to_df
+from .._health import record_failure, record_success
 from .._reconnect import (
     _RETRY_DELAYS,
     AsyncHeartbeatMixin,
@@ -268,20 +269,28 @@ class MacClient:
 
         两阶段韧性与 TdxClient 对称：先同主机重试（``_RETRY_DELAYS``），
         再跨主机故障转移（重新测速切到另一台 MAC 服务器）。
+
+        健康分联动：成功路径记 ``record_success``，连接失败记 ``record_failure``，
+        与 A 股 client 一致（健康分全局共享，但 MAC 服务器 IP 与 A 股不重叠，
+        不会互相干扰）。
         """
         try:
-            return self._conn.execute(cmd)
+            result = self._conn.execute(cmd)
         except TdxConnectionError:
             if not self._auto_reconnect:
                 raise
+            record_failure(self._host)
             last_exc: TdxConnectionError | None = None
             for delay in _RETRY_DELAYS:
                 time.sleep(delay)
                 self._reconnect()
                 try:
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             # 第二阶段：跨主机故障转移——测速切到另一台 MAC 服务器再试一次。
             # save_best_mac_host（而非 save_best_host）：MAC 服务器写入独立的
             # best_mac_host 配置项，不污染标准 best_host（v1.19.4 修复的回归）。
@@ -296,10 +305,16 @@ class MacClient:
             if new_host is not None:
                 self._reconnect(new_host)
                 try:
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             raise last_exc  # type: ignore[misc]
+        else:
+            record_success(self._host)
+            return result
 
     # ------------------------------------------------------------------ #
     # 报价
@@ -1309,21 +1324,28 @@ class AsyncMacClient(AsyncHeartbeatMixin):
     # ------------------------------------------------------------------ #
 
     async def _execute(self, cmd: BaseCommand[_T]) -> _T:
-        """执行命令；断线时指数退避重试，同主机耗尽则跨主机故障转移。"""
+        """执行命令；断线时指数退避重试，同主机耗尽则跨主机故障转移。
+
+        健康分联动与 sync 版对称（见 :meth:`MacClient._execute`）。
+        """
         async with self._execute_lock:
             try:
-                return await self._conn.execute(cmd)
+                result = await self._conn.execute(cmd)
             except TdxConnectionError:
                 if not self._auto_reconnect:
                     raise
+                record_failure(self._host)
                 last_exc: TdxConnectionError | None = None
                 for delay in _RETRY_DELAYS:
                     await asyncio.sleep(delay)
                     await self._areconnect()
                     try:
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 # 第二阶段：跨主机故障转移
                 # save_best_mac_host：写入独立配置项，不污染标准 best_host
                 # （v1.19.4 修复的回归：MAC failover 不可用 save_best_host）
@@ -1338,10 +1360,16 @@ class AsyncMacClient(AsyncHeartbeatMixin):
                 if new_host is not None:
                     await self._areconnect(new_host)
                     try:
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 raise last_exc  # type: ignore[misc]
+            else:
+                record_success(self._host)
+                return result
 
     # ------------------------------------------------------------------ #
     # 报价
