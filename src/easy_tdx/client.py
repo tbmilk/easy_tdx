@@ -22,6 +22,7 @@ from ._df import (
     _merge_txn_datetime,
     _to_df,
 )
+from ._health import record_failure, record_success
 from ._reconnect import (
     _RETRY_DELAYS,
     AsyncHeartbeatMixin,
@@ -344,20 +345,29 @@ class TdxClient:
             2. 跨主机故障转移——同主机重试仍失败时，重新测速选延迟最低的另
                一台服务器再试一轮。服务器连不上时用户无需手动 ``ping``。
         ``auto_reconnect=False`` 时两阶段都不触发，直接抛出原异常。
+
+        健康分联动：成功路径记 ``record_success``（恢复 score），连接失败
+        记 ``record_failure``（降权），让频繁断连的服务器在后续故障转移中
+        自动靠后。
         """
         try:
-            return self._conn.execute(cmd)
+            result = self._conn.execute(cmd)
         except TdxConnectionError:
             if not self._auto_reconnect:
                 raise
+            # 连接失败：当前主机降权
+            record_failure(self._host)
             last_exc: TdxConnectionError | None = None
             for delay in _RETRY_DELAYS:
                 time.sleep(delay)
                 self._reconnect()
                 try:
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             # 第二阶段：跨主机故障转移——重新测速切到另一台服务器再试一次
             new_host = select_best_host_sync(
                 get_known_hosts(),
@@ -370,10 +380,16 @@ class TdxClient:
             if new_host is not None:
                 self._reconnect(new_host)
                 try:
-                    return self._conn.execute(cmd)
+                    result = self._conn.execute(cmd)
+                    record_success(self._host)
+                    return result
                 except TdxConnectionError as e:
                     last_exc = e
+                    record_failure(self._host)
             raise last_exc  # type: ignore[misc]
+        else:
+            record_success(self._host)
+            return result
 
     # ------------------------------------------------------------------ #
     # 市场信息
@@ -508,10 +524,12 @@ class TdxClient:
         """
         cmd = GetSecurityBarsCmd(market, code, category, start, count)
         bars = self._execute(cmd)
-        # 空数据故障转移：部分服务器对所有证券返回空 body（不报错），延迟最低的不
-        # 一定有数据，故空时按延迟逐台实测找首台返回数据的 host。
+        # 空数据故障转移：服务器连通但返回空/截断（部分服务器对所有证券返回空 body
+        # 且不报错），按延迟顺序逐台实测找首台有效数据的服务器。与 get_market_stat
+        # 同源逻辑。注意：真·无历史数据（如新股）所有服务器都返回空，此时换台仍为空，
+        # 直接返回空 DataFrame 而非 raise——避免把"该股票本就没数据"误报为故障。
         if not bars and self._auto_reconnect:
-            bars = self._find_host_returning_bars(cmd)
+            bars = self._find_host_returning_data(cmd)
         df = _to_df(bars)
         delta = _category_to_minutes(int(category))
         is_intraday = delta is not None
@@ -541,10 +559,11 @@ class TdxClient:
         """
         cmd = GetIndexBarsCmd(market, code, category, start, count)
         bars = self._execute(cmd)
-        # 空数据故障转移：指数/板块指数（880xxx 等）并非所有服务器都提供，延迟最低
-        # 的不一定返回数据，故空时按延迟逐台实测找首台返回数据的 host。
+        # 空数据故障转移：指数/板块指数（880xxx 等）并非所有服务器都提供，服务端
+        # 截断返回 0 条是已知现象（日志"指数K线响应在第1/800条处被截断"）。
+        # 按延迟顺序逐台实测换台，避免上层拿到空数据。全失败则返回空 DataFrame。
         if not bars and self._auto_reconnect:
-            bars = self._find_host_returning_bars(cmd)
+            bars = self._find_host_returning_data(cmd)
         df = _to_df(bars)
         delta = _category_to_minutes(int(category))
         is_intraday = delta is not None
@@ -769,56 +788,44 @@ class TdxClient:
             )
         )
 
+    def _find_host_returning_data(self, cmd: "BaseCommand[_T]") -> _T:
+        """空数据故障转移：测速后按延迟顺序逐台实测，返回首台有效数据的结果。
+
+        泛化版：支持任意返回 ``list``/序列的命令（quotes、K 线 bars 等）。
+        统计指数（880005 等）、指数 K 线等并非所有服务器都提供，延迟最低的不
+        一定返回数据，故需逐台实际查询。最多尝试 ``_WORKING_HOST_MAX_ATTEMPTS``
+        台（见 ``_reconnect``）。找到后 client 停在该 host；全失败返回空值
+        （由 ``bool()`` 判空）。
+
+        Note:
+            命令返回值必须可被 ``bool()`` 判空（list / DataFrame 均满足）。
+        """
+        bad_host = self._host
+        ranked = ping_all(get_known_hosts(), self._port, 5.0)
+
+        def _try(host: str) -> bool:
+            # 切换到候选 host 并实测；非空即视为该 host 可用
+            self._reconnect(host)
+            return bool(self._execute(cmd))
+
+        new_host = find_working_host_sync(ranked, _try, save_best_host, bad_host)
+        if new_host is None:
+            # 全部候选都不可用，回退到原 host（保持状态可预测）
+            if self._host != bad_host:
+                self._reconnect(bad_host)
+            return []  # type: ignore[return-value]
+        # _try 已把 client 切到 new_host 并执行过 cmd，重新取一次拿结果
+        return self._execute(cmd)
+
     def _find_host_returning_quotes(
         self, cmd: "BaseCommand[list[SecurityQuote]]"
     ) -> list[SecurityQuote]:
-        """空数据故障转移：测速后按延迟顺序逐台实测，返回首台有效数据的 quotes。
+        """空数据故障转移（quotes 专用薄封装）。
 
-        专供 ``get_market_stat`` 使用——统计指数并非所有服务器都提供，延迟最低
-        的不一定返回数据，故需逐台实际查询。最多尝试 ``_WORKING_HOST_MAX_ATTEMPTS``
-        台（见 ``_reconnect``）。找到后 client 停在该 host；全失败返回空。
+        保留独立方法以兼容既有 ``get_market_stat`` 调用与外部测试；实际委托
+        给泛化版 :meth:`_find_host_returning_data`。
         """
-        bad_host = self._host
-        ranked = ping_all(get_known_hosts(), self._port, 5.0)
-
-        def _try(host: str) -> bool:
-            # 切换到候选 host 并实测；非空即视为该 host 可用
-            self._reconnect(host)
-            return bool(self._execute(cmd))
-
-        new_host = find_working_host_sync(ranked, _try, save_best_host, bad_host)
-        if new_host is None:
-            # 全部候选都不可用，回退到原 host（保持状态可预测）
-            if self._host != bad_host:
-                self._reconnect(bad_host)
-            return []
-        # _try 已把 client 切到 new_host 并执行过 cmd，重新取一次拿结果
-        return self._execute(cmd)
-
-    def _find_host_returning_bars(self, cmd: "BaseCommand[list[SecurityBar]]") -> list[SecurityBar]:
-        """空数据故障转移（K 线类）：与 :meth:`_find_host_returning_quotes` 同模式。
-
-        指数/板块指数（880xxx 等）并非所有服务器都提供，延迟最低的不一定返回
-        数据（实测约 1/8 的服务器对所有指数返回空 body 且不报错）。故 K 线查询
-        空数据时按延迟顺序逐台实测，返回首台返回非空 bars 的结果。最多尝试
-        ``_WORKING_HOST_MAX_ATTEMPTS`` 台；全失败回退原 host 并返回空。
-        """
-        bad_host = self._host
-        ranked = ping_all(get_known_hosts(), self._port, 5.0)
-
-        def _try(host: str) -> bool:
-            # 切换到候选 host 并实测；非空即视为该 host 可用
-            self._reconnect(host)
-            return bool(self._execute(cmd))
-
-        new_host = find_working_host_sync(ranked, _try, save_best_host, bad_host)
-        if new_host is None:
-            # 全部候选都不可用，回退到原 host（保持状态可预测）
-            if self._host != bad_host:
-                self._reconnect(bad_host)
-            return []
-        # _try 已把 client 切到 new_host 并执行过 cmd，重新取一次拿结果
-        return self._execute(cmd)
+        return self._find_host_returning_data(cmd)
 
     def _collect_transaction_records(
         self,
@@ -1043,18 +1050,23 @@ class AsyncTdxClient(AsyncHeartbeatMixin):
         """
         async with self._execute_lock:
             try:
-                return await self._conn.execute(cmd)
+                result = await self._conn.execute(cmd)
             except TdxConnectionError:
                 if not self._auto_reconnect:
                     raise
+                # 连接失败：当前主机降权
+                record_failure(self._host)
                 last_exc: TdxConnectionError | None = None
                 for delay in _RETRY_DELAYS:
                     await asyncio.sleep(delay)
                     await self._areconnect()
                     try:
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 # 第二阶段：跨主机故障转移
                 new_host = await select_best_host_async(
                     get_known_hosts(),
@@ -1067,10 +1079,16 @@ class AsyncTdxClient(AsyncHeartbeatMixin):
                 if new_host is not None:
                     await self._areconnect(new_host)
                     try:
-                        return await self._conn.execute(cmd)
+                        result = await self._conn.execute(cmd)
+                        record_success(self._host)
+                        return result
                     except TdxConnectionError as e:
                         last_exc = e
+                        record_failure(self._host)
                 raise last_exc  # type: ignore[misc]
+            else:
+                record_success(self._host)
+                return result
 
     async def get_security_count(self, market: Market) -> int:
         return await self._execute(GetSecurityCountCmd(market))
@@ -1180,8 +1198,9 @@ class AsyncTdxClient(AsyncHeartbeatMixin):
         """获取 K 线数据。``bar_time`` 见同步版 :meth:`get_security_bars`。"""
         cmd = GetSecurityBarsCmd(market, code, category, start, count)
         bars = await self._execute(cmd)
+        # 空数据故障转移（与 sync 版对称）：服务器连通但返回空/截断时逐台换台。
         if not bars and self._auto_reconnect:
-            bars = await self._find_host_returning_bars(cmd)
+            bars = await self._find_host_returning_data(cmd)
         df = _to_df(bars)
         delta = _category_to_minutes(int(category))
         is_intraday = delta is not None
@@ -1207,8 +1226,9 @@ class AsyncTdxClient(AsyncHeartbeatMixin):
         """获取指数 K 线数据。``bar_time`` 见同步版 :meth:`get_index_bars`。"""
         cmd = GetIndexBarsCmd(market, code, category, start, count)
         bars = await self._execute(cmd)
+        # 空数据故障转移（与 sync 版对称）：指数 K 线截断/空时逐台换台。
         if not bars and self._auto_reconnect:
-            bars = await self._find_host_returning_bars(cmd)
+            bars = await self._find_host_returning_data(cmd)
         df = _to_df(bars)
         delta = _category_to_minutes(int(category))
         is_intraday = delta is not None
@@ -1399,45 +1419,32 @@ class AsyncTdxClient(AsyncHeartbeatMixin):
             )
         )
 
+    async def _find_host_returning_data(self, cmd: "BaseCommand[_T]") -> _T:
+        """空数据故障转移（async）：与 sync ``_find_host_returning_data`` 对称。
+
+        泛化版，支持任意可 ``bool()`` 判空的命令返回值（quotes / K 线 bars）。
+        """
+        bad_host = self._host
+        ranked = await asyncio.to_thread(ping_all, get_known_hosts(), self._port, 5.0)
+
+        async def _try(host: str) -> bool:
+            await self._areconnect(host)
+            # mypy 对 async 闭包内泛型参数的推断会宽化为 BaseCommand[object]
+            # （sync 同模式可正确推断），此处为已知 mypy 限制，非真实类型错误。
+            return bool(await self._execute(cmd))  # type: ignore[arg-type]
+
+        new_host = await find_working_host_async(ranked, _try, save_best_host, bad_host)
+        if new_host is None:
+            if self._host != bad_host:
+                await self._areconnect(bad_host)
+            return []  # type: ignore[return-value]
+        return await self._execute(cmd)
+
     async def _find_host_returning_quotes(
         self, cmd: "BaseCommand[list[SecurityQuote]]"
     ) -> list[SecurityQuote]:
-        """空数据故障转移（async）：与 sync ``_find_host_returning_quotes`` 对称。"""
-        bad_host = self._host
-        ranked = await asyncio.to_thread(ping_all, get_known_hosts(), self._port, 5.0)
-
-        async def _try(host: str) -> bool:
-            await self._areconnect(host)
-            # mypy 对 async 闭包内泛型参数的推断会宽化为 BaseCommand[object]
-            # （sync 同模式可正确推断），此处为已知 mypy 限制，非真实类型错误。
-            return bool(await self._execute(cmd))  # type: ignore[arg-type]
-
-        new_host = await find_working_host_async(ranked, _try, save_best_host, bad_host)
-        if new_host is None:
-            if self._host != bad_host:
-                await self._areconnect(bad_host)
-            return []
-        return await self._execute(cmd)
-
-    async def _find_host_returning_bars(
-        self, cmd: "BaseCommand[list[SecurityBar]]"
-    ) -> list[SecurityBar]:
-        """空数据故障转移（K 线类，async）：与 sync ``_find_host_returning_bars`` 对称。"""
-        bad_host = self._host
-        ranked = await asyncio.to_thread(ping_all, get_known_hosts(), self._port, 5.0)
-
-        async def _try(host: str) -> bool:
-            await self._areconnect(host)
-            # mypy 对 async 闭包内泛型参数的推断会宽化为 BaseCommand[object]
-            # （sync 同模式可正确推断），此处为已知 mypy 限制，非真实类型错误。
-            return bool(await self._execute(cmd))  # type: ignore[arg-type]
-
-        new_host = await find_working_host_async(ranked, _try, save_best_host, bad_host)
-        if new_host is None:
-            if self._host != bad_host:
-                await self._areconnect(bad_host)
-            return []
-        return await self._execute(cmd)
+        """空数据故障转移（async quotes 专用薄封装）。"""
+        return await self._find_host_returning_data(cmd)
 
     async def _collect_transaction_records(
         self,
